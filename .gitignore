@@ -1,0 +1,16 @@
+# 系统/编辑器
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# 打包产物
+*.zip
+*.crx
+*.pem
+
+# 依赖（本项目暂无，预留）
+node_modules/
+
+# 临时文件
+*.log
+*.tmp

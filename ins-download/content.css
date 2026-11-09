@@ -1,0 +1,82 @@
+/* 按钮挂在 body 下，用 fixed 定位跟随媒体，避开 IG 的透明交互遮罩 */
+.ins-dl-btn {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 2147483647;
+  width: 34px;
+  height: 34px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  margin: 0;
+  pointer-events: auto;
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+.ins-dl-btn:hover {
+  background: rgba(0, 0, 0, 0.8);
+  transform: scale(1.08);
+}
+.ins-dl-btn svg {
+  width: 18px;
+  height: 18px;
+  pointer-events: none;
+}
+.ins-dl-btn.ins-dl-done {
+  background: #2ecc71;
+}
+.ins-dl-btn.ins-dl-error {
+  background: #e74c3c;
+}
+.ins-dl-btn.ins-dl-loading {
+  opacity: 0.6;
+  cursor: wait;
+}
+/* 多张下载选择菜单 */
+.ins-dl-menu {
+  position: fixed;
+  z-index: 2147483647;
+  min-width: 180px;
+  background: #262626;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+  font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+}
+.ins-dl-menu-item {
+  display: block;
+  width: 100%;
+  padding: 10px 14px;
+  border: none;
+  background: transparent;
+  color: #fff;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.ins-dl-menu-item:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+/* 错误提示条 */
+.ins-dl-toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2147483647;
+  max-width: 70vw;
+  padding: 10px 16px;
+  background: #c0392b;
+  color: #fff;
+  font-size: 13px;
+  font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+  border-radius: 6px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+  word-break: break-all;
+}
