@@ -1146,6 +1146,14 @@
     scan,
     // 进度环当前状态（排查「点了没反应 / 环不涨」时看这个）
     ring: () => ({ pid: ring.pid, percent: Math.round(ring.p), known: ring.known }),
+    // 当前检测到的吸顶栏遮挡线（按钮低于这条线就会隐藏）。若按钮仍浮在导航上而
+    // 这里返回 0，说明没认出导航容器，把值告诉我即可按实际结构补选择器。
+    occlusion: () => {
+      occl.at = 0;
+      const v = occludedTop();
+      console.log(LOG, "吸顶栏底边 =", v, "px");
+      return v;
+    },
     clearCache: () => {
       statusCache.clear();
       componentCache.clear();

@@ -270,6 +270,8 @@ ins-download/                 ← 加载扩展时选这个文件夹
 | 微博 | `__wbDl.inspect(0)` | 对第 0 张卡片跑完整取址链路，打印所有候选地址（排查"没按钮/下不了"最快） |
 | 微博 | `__wbDl.resolve("帖子id")` | 直接调接口看解析结果 |
 | 微博 | `__wbDl.checkImage("图片地址")` | 看该地址是否被判为正文配图、各档清晰度与候选顺序 |
+| 微博 | `__wbDl.ring()` | 看进度环状态：progressId、当前百分比、总量是否已知 |
+| 微博 | `__wbDl.occlusion()` | 看当前识别到的吸顶栏底边（按钮低于这条线即隐藏）；返回 0 说明没认出导航容器 |
 | 微博 | `__wbDl.clearCache()` | 清掉接口与视频组件缓存，强制重新请求 |
 | 通用 | `chrome://extensions` → 本扩展 → **检查视图 service worker** | 看后台下载调度与 offscreen 的报错 |
 
