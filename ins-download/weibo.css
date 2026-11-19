@@ -1,0 +1,85 @@
+/* 微博下载按钮：独立样式，与 ins 的 .ins-dl-* 完全隔离，互不覆盖
+ * 按钮同样挂在 body 下用 fixed 定位，避免被微博播放器/图片查看层的透明遮罩挡住 */
+.wb-dl-btn {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 2147483647;
+  width: 34px;
+  height: 34px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  margin: 0;
+  pointer-events: auto;
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+.wb-dl-btn:hover {
+  background: #eb7350;
+  transform: scale(1.08);
+}
+.wb-dl-btn svg {
+  width: 18px;
+  height: 18px;
+  pointer-events: none;
+}
+.wb-dl-btn.wb-dl-done {
+  background: #2ecc71;
+}
+.wb-dl-btn.wb-dl-error {
+  background: #e74c3c;
+}
+.wb-dl-btn.wb-dl-loading {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+/* 多图选择菜单 */
+.wb-dl-menu {
+  position: fixed;
+  z-index: 2147483647;
+  min-width: 200px;
+  background: #262626;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+  font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+}
+.wb-dl-menu-item {
+  display: block;
+  width: 100%;
+  padding: 10px 14px;
+  border: none;
+  background: transparent;
+  color: #fff;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.wb-dl-menu-item:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+/* 错误提示条 */
+.wb-dl-toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2147483647;
+  max-width: 70vw;
+  padding: 10px 16px;
+  background: #c0392b;
+  color: #fff;
+  font-size: 13px;
+  font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+  border-radius: 6px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+  word-break: break-all;
+}

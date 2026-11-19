@@ -66,6 +66,40 @@
   <div class="hint">视频以 Instagram 实际提供的流为准，会优先匹配所选清晰度</div>
 </section>
 
+<section>
+  <h2>微博下载（weibo.com）</h2>
+  <div class="hint" style="margin-top:0">以下设置只作用于微博，与上面的 Instagram 设置互不影响</div>
+  <label>图片保存位置</label>
+  <div class="dir-row">
+    <div class="dir-display" id="weiboImageDirDisplay">默认（下载\weibo-download\images）</div>
+    <button class="btn" id="weiboImagePick">选择文件夹</button>
+    <button class="btn warn" id="weiboImageReauth" style="display:none">重新授权</button>
+    <button class="btn" id="weiboImageReset" style="display:none">恢复默认</button>
+  </div>
+  <label for="weiboImageQuality">图片清晰度</label>
+  <select id="weiboImageQuality">
+    <option value="orj360">标准（360P）</option>
+    <option value="mw690">高清（690P）</option>
+    <option value="orj1080">超清（1080P）</option>
+    <option value="large">原图（不压缩）</option>
+  </select>
+  <div class="hint">微博图片按尺寸路径存取，原图可能较大，批量下载时注意流量</div>
+
+  <label>视频保存位置</label>
+  <div class="dir-row">
+    <div class="dir-display" id="weiboVideoDirDisplay">默认（下载\weibo-download\videos）</div>
+    <button class="btn" id="weiboVideoPick">选择文件夹</button>
+    <button class="btn warn" id="weiboVideoReauth" style="display:none">重新授权</button>
+    <button class="btn" id="weiboVideoReset" style="display:none">恢复默认</button>
+  </div>
+  <label for="weiboVideoQuality">视频清晰度</label>
+  <select id="weiboVideoQuality">
+    <option value="hd">高清</option>
+    <option value="sd">标清</option>
+  </select>
+  <div class="hint">微博接口通常只提供高清/标清两档，以实际返回为准</div>
+</section>
+
 <button id="save">保存</button><span id="status"></span>
 <script src="idb.js"></script>
 <script src="options.js"></script>

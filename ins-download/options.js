@@ -79,3 +79,114 @@ document.getElementById("videoReauth").addEventListener("click", () => pickFolde
 document.getElementById("imageReset").addEventListener("click", () => resetFolder("image"));
 document.getElementById("videoReset").addEventListener("click", () => resetFolder("video"));
 document.getElementById("save").addEventListener("click", save);
+
+/* ================= 微博设置 =================
+ * 完全独立于上面的 ins 设置：独立的 storage 键、独立的句柄、独立的默认目录。
+ * 不修改任何已有函数，只追加新函数与新的监听器。
+ */
+const WEIBO_DEFAULT_DIR = {
+  image: "weibo-download/images",
+  video: "weibo-download/videos"
+};
+const WEIBO_QUALITY_DEFAULTS = {
+  weiboImageQuality: "orj1080",
+  weiboVideoQuality: "hd"
+};
+
+function wbPrefix(which) {
+  return which === "image" ? "weiboImage" : "weiboVideo";
+}
+
+async function refreshWeiboDirUI(which) {
+  const prefix = wbPrefix(which);
+  const res = await chrome.storage.sync.get([prefix + "Custom", prefix + "DirName"]);
+  const display = document.getElementById(prefix + "DirDisplay");
+  const reauth = document.getElementById(prefix + "Reauth");
+  const reset = document.getElementById(prefix + "Reset");
+  if (!display) return;
+
+  if (res[prefix + "Custom"] !== true) {
+    display.textContent =
+      "默认（下载\\" + WEIBO_DEFAULT_DIR[which].replace(/\//g, "\\") + "）";
+    reauth.style.display = "none";
+    reset.style.display = "none";
+    return;
+  }
+
+  const name = res[prefix + "DirName"] || "已选择的文件夹";
+  let perm = "granted";
+  try {
+    const handle = await idbGet(prefix + "DirHandle");
+    if (handle) perm = await handle.queryPermission({ mode: "readwrite" });
+  } catch (e) {
+    /* ignore */
+  }
+  display.textContent =
+    "自定义：" + name + (perm === "granted" ? "" : "（需要重新授权）");
+  reauth.style.display = perm === "granted" ? "none" : "";
+  reset.style.display = "";
+}
+
+async function pickWeiboFolder(which) {
+  const prefix = wbPrefix(which);
+  try {
+    const handle = await window.showDirectoryPicker({ mode: "readwrite" });
+    await idbSet(prefix + "DirHandle", handle);
+    await chrome.storage.sync.set({
+      [prefix + "Custom"]: true,
+      [prefix + "DirName"]: handle.name
+    });
+    await refreshWeiboDirUI(which);
+  } catch (e) {
+    // 用户取消选择
+  }
+}
+
+async function resetWeiboFolder(which) {
+  const prefix = wbPrefix(which);
+  await idbDel(prefix + "DirHandle");
+  await chrome.storage.sync.set({ [prefix + "Custom"]: false });
+  await refreshWeiboDirUI(which);
+}
+
+async function restoreWeibo() {
+  const res = await chrome.storage.sync.get(Object.keys(WEIBO_QUALITY_DEFAULTS));
+  for (const k in WEIBO_QUALITY_DEFAULTS) {
+    const el = document.getElementById(k);
+    if (el) el.value = res[k] !== undefined ? res[k] : WEIBO_QUALITY_DEFAULTS[k];
+  }
+  await refreshWeiboDirUI("image");
+  await refreshWeiboDirUI("video");
+}
+
+function saveWeibo() {
+  const data = {};
+  for (const k in WEIBO_QUALITY_DEFAULTS) {
+    const el = document.getElementById(k);
+    if (el) data[k] = el.value;
+  }
+  chrome.storage.sync.set(data);
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  restoreWeibo();
+  document
+    .getElementById("weiboImagePick")
+    .addEventListener("click", () => pickWeiboFolder("image"));
+  document
+    .getElementById("weiboVideoPick")
+    .addEventListener("click", () => pickWeiboFolder("video"));
+  document
+    .getElementById("weiboImageReauth")
+    .addEventListener("click", () => pickWeiboFolder("image"));
+  document
+    .getElementById("weiboVideoReauth")
+    .addEventListener("click", () => pickWeiboFolder("video"));
+  document
+    .getElementById("weiboImageReset")
+    .addEventListener("click", () => resetWeiboFolder("image"));
+  document
+    .getElementById("weiboVideoReset")
+    .addEventListener("click", () => resetWeiboFolder("video"));
+  document.getElementById("save").addEventListener("click", saveWeibo);
+});

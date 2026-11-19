@@ -62,6 +62,8 @@ function blobToDataUrl(blob) {
 
 async function handleZip(msg) {
   // 抓取全部媒体
+  // prefix：zip 内文件名前缀。ins 侧不传，默认 "ins_"（保持原行为）；微博传 "weibo_"
+  const prefix = msg.prefix || "ins_";
   const files = [];
   for (let i = 0; i < msg.items.length; i++) {
     const item = msg.items[i];
@@ -69,7 +71,7 @@ async function handleZip(msg) {
     if (!resp.ok) continue; // 跳过失败项，不中断整包
     const buf = new Uint8Array(await resp.arrayBuffer());
     const ext = item.type === "video" ? "mp4" : "jpg";
-    files.push({ name: "ins_" + String(i + 1).padStart(2, "0") + "." + ext, data: buf });
+    files.push({ name: prefix + String(i + 1).padStart(2, "0") + "." + ext, data: buf });
   }
   if (!files.length) return { ok: false, error: "all-fetch-failed" };
 
