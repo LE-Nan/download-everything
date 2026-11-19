@@ -78,12 +78,12 @@
   </div>
   <label for="weiboImageQuality">图片清晰度</label>
   <select id="weiboImageQuality">
-    <option value="orj360">标准（360P）</option>
-    <option value="mw690">高清（690P）</option>
+    <option value="large">原图（不压缩，推荐）</option>
     <option value="orj1080">超清（1080P）</option>
-    <option value="large">原图（不压缩）</option>
+    <option value="mw690">高清（690P）</option>
+    <option value="orj360">标准（360P）</option>
   </select>
-  <div class="hint">微博图片按尺寸路径存取，原图可能较大，批量下载时注意流量</div>
+  <div class="hint">微博并非每张图都有 1080 / 690 档，取不到的档位会自动回退到原图</div>
 
   <label>视频保存位置</label>
   <div class="dir-row">

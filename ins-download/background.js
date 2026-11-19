@@ -114,30 +114,118 @@ function weiboKeys(type) {
   return { key, prefix: key === "video" ? "weiboVideo" : "weiboImage" };
 }
 
+/* 微博的图床与视频 CDN 会校验 Referer，缺了直接回 403（返回 HTML 错误页）。
+ * 扩展发起的 fetch / chrome.downloads 默认带的是 chrome-extension:// 来源，
+ * 所以用 declarativeNetRequest 会话规则把 Referer/Origin 补成 weibo.com。
+ *
+ * 只作用于图床与视频 CDN（sinaimg / weibocdn），**不包含 weibo.com 本身**：
+ * 那条规则会连页面自己的 ajax 请求一起改，可能破坏微博自身的 CSRF 校验。
+ * 会话级规则，浏览器重启后由 onStartup 重新安装。
+ */
+const WEIBO_HEADER_RULE_ID = 9001;
+let weiboHeaderReady = null;
+
+async function setupWeiboHeaders() {
+  if (!chrome.declarativeNetRequest || !chrome.declarativeNetRequest.updateSessionRules) return;
+  const base = {
+    id: WEIBO_HEADER_RULE_ID,
+    priority: 1,
+    action: {
+      type: "modifyHeaders",
+      requestHeaders: [{ header: "referer", operation: "set", value: "https://weibo.com/" }]
+    },
+    condition: { requestDomains: ["sinaimg.cn", "weibocdn.com", "weibocdn.cn"] }
+  };
+  // Origin 不是所有 Chrome 版本都允许改写，失败就只保留 Referer
+  const withOrigin = JSON.parse(JSON.stringify(base));
+  withOrigin.action.requestHeaders.push({
+    header: "origin",
+    operation: "set",
+    value: "https://weibo.com/"
+  });
+  try {
+    await chrome.declarativeNetRequest.updateSessionRules({
+      removeRuleIds: [WEIBO_HEADER_RULE_ID],
+      addRules: [withOrigin]
+    });
+  } catch (e) {
+    try {
+      await chrome.declarativeNetRequest.updateSessionRules({
+        removeRuleIds: [WEIBO_HEADER_RULE_ID],
+        addRules: [base]
+      });
+    } catch (e2) {
+      console.warn("[ins download] 微博请求头规则安装失败", e2 && e2.message);
+    }
+  }
+}
+
+function ensureWeiboHeaders() {
+  if (!weiboHeaderReady) weiboHeaderReady = setupWeiboHeaders();
+  return weiboHeaderReady;
+}
+
+if (chrome.runtime.onInstalled) {
+  chrome.runtime.onInstalled.addListener(() => {
+    weiboHeaderReady = null;
+    ensureWeiboHeaders();
+  });
+}
+if (chrome.runtime.onStartup) {
+  chrome.runtime.onStartup.addListener(() => {
+    weiboHeaderReady = null;
+    ensureWeiboHeaders();
+  });
+}
+
+// 探测候选地址：返回第一个「真能拿到媒体字节」的地址 + 真实扩展名
+async function probeCandidates(candidates, kind) {
+  await ensureWeiboHeaders();
+  await ensureOffscreen();
+  const resp = await chrome.runtime.sendMessage({
+    target: "offscreen",
+    action: "probe-media",
+    candidates,
+    kind
+  });
+  return resp || { ok: false, error: "no-response" };
+}
+
 async function handleWeiboDownload(msg) {
   const { key, prefix } = weiboKeys(msg.type);
   const cfg = await chrome.storage.sync.get([prefix + "Custom", prefix + "Dir"]);
-  const ext = key === "video" ? "mp4" : "jpg";
   const suffix = msg.nameSuffix || "";
-  const name = "weibo_" + key + "_" + timestamp() + suffix + "." + ext;
+  const base = "weibo_" + key + "_" + timestamp() + suffix;
 
-  if (cfg[prefix + "Custom"]) {
-    try {
+  // 兼容旧消息格式（只带 url）
+  let candidates = Array.isArray(msg.candidates) ? msg.candidates.filter(Boolean) : [];
+  if (!candidates.length && msg.url) candidates = [msg.url];
+  if (!candidates.length) return { ok: false, error: "no-candidates" };
+
+  try {
+    // 先探明哪个地址是真正的媒体（避开 404 HTML / 403 错误页，拿到真实后缀）
+    const probe = await probeCandidates(candidates, key);
+    if (!probe.ok) return probe;
+
+    const fileName = base + "." + probe.ext;
+
+    if (cfg[prefix + "Custom"]) {
       await ensureOffscreen();
       const resp = await chrome.runtime.sendMessage({
         target: "offscreen",
         dirKey: prefix + "DirHandle",
-        url: msg.url,
-        fileName: name
+        url: probe.url,
+        fileName,
+        rejectHtml: true
       });
       return resp || { ok: false, error: "no-response" };
-    } catch (e) {
-      return { ok: false, error: String(e && e.message ? e.message : e) };
     }
-  }
 
-  const dir = (cfg[prefix + "Dir"] || WEIBO_DEFAULT_DIR[key]).replace(/^\/+|\/+$/g, "");
-  return downloadViaChrome(msg.url, dir + "/" + name);
+    const dir = (cfg[prefix + "Dir"] || WEIBO_DEFAULT_DIR[key]).replace(/^\/+|\/+$/g, "");
+    return downloadViaChrome(probe.url, dir + "/" + fileName);
+  } catch (e) {
+    return { ok: false, error: String(e && e.message ? e.message : e) };
+  }
 }
 
 async function handleWeiboZip(msg) {
@@ -149,6 +237,7 @@ async function handleWeiboZip(msg) {
   const zipName = "weibo_" + key + "s_" + timestamp() + ".zip";
 
   try {
+    await ensureWeiboHeaders();
     await ensureOffscreen();
     const resp = await chrome.runtime.sendMessage({
       target: "offscreen",
@@ -156,6 +245,7 @@ async function handleWeiboZip(msg) {
       items,
       zipName,
       prefix: "weibo_",
+      sniffExt: true,
       dirKey: cfg[prefix + "Custom"] ? prefix + "DirHandle" : null
     });
     if (resp && resp.ok && resp.dataUrl) {
@@ -168,6 +258,33 @@ async function handleWeiboZip(msg) {
   }
 }
 
+/* 微博接口兜底：页面里同源 fetch 失败时（如 s.weibo.com 上没有该接口、
+ * 或跨域被 CORS 拦），由 offscreen（带 host 权限）代发一次。
+ * 只转发微博自有域名，避免变成任意地址的通用代理。
+ */
+async function handleWeiboApi(msg) {
+  let url;
+  try {
+    url = new URL(msg.url);
+  } catch (e) {
+    return { ok: false, error: "bad-url" };
+  }
+  if (!/(^|\.)weibo\.com$|(^|\.)weibo\.cn$/i.test(url.hostname)) {
+    return { ok: false, error: "host-not-allowed" };
+  }
+  await ensureWeiboHeaders();
+  await ensureOffscreen();
+  const resp = await chrome.runtime.sendMessage({
+    target: "offscreen",
+    action: "weibo-api",
+    url: url.toString(),
+    method: msg.method || "GET",
+    body: msg.body || null,
+    contentType: msg.contentType || null
+  });
+  return resp || { ok: false, error: "no-response" };
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg) return;
   if (msg.action === "download") {
@@ -176,6 +293,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg.action === "zip") {
     handleZip(msg).then(sendResponse);
+    return true;
+  }
+  if (msg.action === "weibo-api") {
+    handleWeiboApi(msg).then(sendResponse);
     return true;
   }
 });

@@ -89,7 +89,9 @@ const WEIBO_DEFAULT_DIR = {
   video: "weibo-download/videos"
 };
 const WEIBO_QUALITY_DEFAULTS = {
-  weiboImageQuality: "orj1080",
+  // 默认取原图：微博接口直接给的就是最大档，再降档反而丢画质；
+  // orj1080 并不是每张图都有，作为首选项容易 404，所以只作为兜底
+  weiboImageQuality: "large",
   weiboVideoQuality: "hd"
 };
 

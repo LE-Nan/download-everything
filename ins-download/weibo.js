@@ -8,21 +8,31 @@
  * （自定义文件夹、zip、chrome.downloads）与站点无关，不需要为微博再写一套，
  * 只要在消息里带上 site: "weibo" 即可路由到独立的目录配置。
  *
- * ── 抗站点改版策略 ──────────────────────────────────────────
- * 不依赖任何构建期哈希类名（weibo 用 Vue，类名形如 .woo-box-flex 尚算语义，
- * 但外层容器类名常变），只依赖两样稳定物：
- *   1) 每条微博容器上的 mid 属性（微博自己的 JS 全程使用，改版风险最低）
- *   2) 图片域名 sinaimg.cn + 路径首段的尺寸标记（orj360 / mw690 / large …）
- * 媒体元素本身用通用选择器 img / video 扫描，再向上找最近的 [mid] 容器。
- * 这样即使信息流 DOM 结构大改，只要 mid 属性还在，按钮就能挂上去。
+ * ── 卡片识别（v1.2 修正）──────────────────────────────────────
+ * 微博现在同时存在两套前端：
+ *   新版首页/详情页  <article class="woo-panel-main">   ← 没有 mid 属性！
+ *   搜索页/旧版列表  <div class="card-wrap" action-type="feed_list_item" mid="...">
+ * v1.1 只认 [mid]，导致首页完全挂不上按钮。现改为按「最近祖先匹配任一卡片选择器」，
+ * 并把帖子 id 的取值拆成两条：
+ *   1) 有 mid 属性 → 直接用（数字 mid，接口同样接受）
+ *   2) 没有 → 从卡片里的微博链接取 mblogid（形如 /{uid}/{mblogid}、/detail/xxx、/status/xxx）
+ * 两者都能直接喂给 /ajax/statuses/show?id= 接口。
  *
  * ── 取址链路（逐级降级）────────────────────────────────────
- *   1) /ajax/statuses/show?id={mid}  内部接口，一次拿到全部图片 + 视频多档流
- *   2) DOM 兜底：本轮已渲染的 img / video（视频若是 blob 流则拿不到）
- * 图片清晰度通过替换 URL 路径首段实现（orj360 → mw690 → orj1080 → large）。
+ *   1) GET  /ajax/statuses/show?id={id}          —— 拿 pic_infos 原图、page_info/mix_media_info 视频
+ *   2) POST /tv/api/component?page=/tv/show/{fid} —— 拿视频全部分辨率直链（最可靠的一档）
+ *   3) DOM 兜底：本轮已渲染的 img / video；视频若是 blob 流则尝试卡片内的 fid 链接
+ * 注意：s.weibo.com 上没有 /ajax/statuses/show 这个接口（返回的是 HTML 页面），
+ * 所以同源取不到时自动改走 background → offscreen 的跨域兜底。
  *
- * ⚠️ 选择器与接口均未在真实登录态页面实测（开发环境无法访问微博），
- *    首次加载后请看控制台 [weibo download] 前缀的日志核对，必要时只改下面的 SEL。
+ * ── 为什么下载地址要交给 offscreen 先探测 ──────────────────
+ * 微博图片按「路径首段」区分尺寸，很多图根本没有 orj1080/large 档，直接访问返回
+ * 404 HTML；Chrome 识别到 HTML 就把文件后缀改成 .htm（历史 bug）。所以真正下载前
+ * 先让 offscreen 用 4KB Range 请求逐个候选地址探测，拿到真实 Content-Type 与文件头，
+ * 确定可用地址 + 真实扩展名，再交给 chrome.downloads。
+ *
+ * ⚠️ 选择器实测自公开维护中的同类脚本（owendswang / firo1603 的「下载微博图片和视频」），
+ *    站点改版后应先跑 __wbDl.debug() 核对，只改下面 SEL 一处即可。
  */
 (function () {
   "use strict";
@@ -31,31 +41,49 @@
   const PROCESSED_ATTR = "data-wbdl-processed";
 
   let enabled = true;
-  // 微博专有配置，与 ins 的 imageQuality / videoQuality 互不干扰
-  const settings = { imageQuality: "orj1080", videoQuality: "hd" };
+  // 微博专有配置，与 ins 的 imageQuality / videoQuality 互不干扰。
+  // 图片默认取原图：接口返回的本来就是最大档，orj1080 并非每张图都有
+  const settings = { imageQuality: "large", videoQuality: "hd" };
 
-  const entries = []; // { btn, root }
+  const entries = []; // { btn, root, dead }
   let rafPending = false;
-  const statusCache = new Map(); // mid -> items
+  const statusCache = new Map(); // postId -> [{type, candidates}]
+  const componentCache = new Map(); // fid -> [{url, height}]
 
   // ---------- 适配层：改版时只动这里 ----------
   const SEL = {
-    // 微博每条微博的容器都带 mid 属性；旧版/特殊页面的兜底
-    rootCandidates: ["[mid]", '[action-type="feed_list_item"]'],
+    // 最近祖先优先匹配；顺序即优先级（新版首页必须放第一个）
+    roots: [
+      "article.woo-panel-main", // 新版首页 / 详情页信息流卡片
+      "div.card-wrap", // 搜索页 / 旧版列表卡片
+      '[action-type="feed_list_item"]', // 旧版信息流
+      "[mid]", // 兜底：任何带 mid 的容器
+      "[data-mid]"
+    ],
     media: "img, video"
   };
 
   // sinaimg 的尺寸标记，出现在 URL 第一段路径：/orj1080/xxx.jpg
   const IMG_TOKENS = [
     "thumb150",
+    "thumb300",
+    "thumb600",
+    "wap180",
+    "wap360",
     "orj360",
+    "orj480",
     "bmiddle",
     "mw690",
-    "orj1080",
+    "mw1024",
     "mw2000",
+    "orj1080",
+    "oslarge",
     "large",
     "original"
   ];
+
+  // 首段命中这些前缀的都不是正文配图：头像 crop.0.0.180.180.50、表情 m/emoticon、站点图标 images
+  const IMG_BLOCK = [/^crop\./i, /^m$/i, /^images?$/i, /^upload/i, /^emoticon/i, /^n$/i];
 
   // ---------- 配置 ----------
   function loadState() {
@@ -94,6 +122,23 @@
     }
   }
 
+  // 统一给后台发消息：任何异常（含扩展被重载后 context 失效）都吞掉，不让页面报错
+  function sendBg(msg) {
+    return new Promise((resolve) => {
+      try {
+        chrome.runtime.sendMessage(msg, (resp) => {
+          if (chrome.runtime.lastError) {
+            resolve(null);
+            return;
+          }
+          resolve(resp || null);
+        });
+      } catch (e) {
+        resolve(null);
+      }
+    });
+  }
+
   // ---------- 图片 URL ----------
   // 微博图片是懒加载的：src 常常还是占位图，真实地址在 data-src。
   // 所以先按顺序挑出「看起来是正文配图」的那个候选，再回退到 src。
@@ -110,16 +155,22 @@
     return img.currentSrc || img.src || "";
   }
 
-  // 只认「微博正文配图」：sinaimg.cn 域名 + 首段是已知尺寸标记。
-  // 这一条同时排除了头像（crop.0.0.180…）、表情（h5.sinaimg.cn/m/emoticon）、站点图标。
-  function isFeedImageUrl(url) {
-    if (!url) return false;
-    if (!/^https?:\/\/[\w.-]+sinaimg\.cn\//i.test(url)) return false;
-    const seg = url
+  function urlPathSeg(url) {
+    return url
       .replace(/^https?:\/\/[^/]+\//i, "")
       .split(/[/?#]/)[0]
       .toLowerCase();
-    return IMG_TOKENS.indexOf(seg) >= 0;
+  }
+
+  // 只认「微博正文配图」：sinaimg.cn 域名 + 首段不是头像/表情/图标
+  function isFeedImageUrl(url) {
+    if (!url) return false;
+    if (!/^https?:\/\/[\w.-]+sinaimg\.cn\//i.test(url)) return false;
+    const seg = urlPathSeg(url);
+    for (const re of IMG_BLOCK) {
+      if (re.test(seg)) return false;
+    }
+    return true;
   }
 
   // 换尺寸：/orj360/ → /orj1080/。首段不在白名单时原样返回，避免改坏别的路径
@@ -130,168 +181,391 @@
     return m[1] + "/" + (quality || "orj1080") + "/" + m[3] + (m[4] || "");
   }
 
-  // ---------- 定位每条微博 ----------
+  // 候选按优先级排列：所选清晰度 → 原图 → 1080。微博并没有为每张图都生成所有档位，
+  // 404 的档位会在 offscreen 探测阶段被跳过，所以这里给足备选。
+  function imageCandidates(url, quality) {
+    const q = quality || settings.imageQuality;
+    const list = [];
+    const push = (u) => {
+      if (u && list.indexOf(u) < 0) list.push(u);
+    };
+    push(applyImageQuality(url, q));
+    push(applyImageQuality(url, "large"));
+    push(applyImageQuality(url, "orj1080"));
+    return list;
+  }
+
+  // ---------- 卡片定位 ----------
+  // 从媒体元素往上找最近的卡片容器；找不到就返回 null（宁可不挂按钮，也不错挂）
   function findRoot(el) {
-    for (const sel of SEL.rootCandidates) {
-      const r = el.closest(sel);
-      if (r) return r;
+    let node = el.parentElement;
+    for (let depth = 0; node && depth < 24; depth++) {
+      for (const sel of SEL.roots) {
+        if (node.matches && node.matches(sel)) return node;
+      }
+      node = node.parentElement;
     }
     return null;
   }
 
-  function midOf(root) {
-    const attr = root.getAttribute && root.getAttribute("mid");
+  // 帖子 id：优先 mid 属性，其次卡片里的微博链接（新版首页只有链接，没有 mid）
+  function postIdOf(root) {
+    const attr = root.getAttribute("mid") || root.getAttribute("data-mid");
     if (attr) return attr;
-    const a = root.querySelector('a[href*="/detail/"], a[href*="/status/"]');
-    if (a) {
-      const m = a.href.match(/\/(?:detail|status)\/([0-9A-Za-z]+)/);
+
+    const links = root.querySelectorAll("a[href]");
+    for (const a of links) {
+      const href = a.getAttribute("href") || "";
+      let m = href.match(/\/(\d{5,})\/([0-9A-Za-z]{6,14})(?:[?#/]|$)/);
+      if (m) return m[2]; // /{uid}/{mblogid}
+      m = href.match(/\/detail\/([0-9A-Za-z]{6,16})/);
+      if (m) return m[1];
+      m = href.match(/\/status\/([0-9A-Za-z]{6,16})/);
       if (m) return m[1];
     }
     return null;
   }
 
-  function isUsableMedia(el) {
-    const r = el.getBoundingClientRect();
-    if (el.tagName === "VIDEO") return r.width > 60 && r.height > 60;
-    if (r.width < 80 && r.height < 80) return false; // 头像、图标、表情
-    return isFeedImageUrl(imageUrlOf(el));
+  function isUsableImage(img) {
+    const r = img.getBoundingClientRect();
+    if (r.width < 80 || r.height < 60) return false; // 头像、图标、表情
+    return isFeedImageUrl(imageUrlOf(img));
   }
 
-  // root -> [media]，按 DOM 顺序
-  function collectItems() {
-    const map = new Map();
-    document.querySelectorAll(SEL.media).forEach((el) => {
-      if (!isUsableMedia(el)) return;
-      const root = findRoot(el);
-      if (!root) return;
-      let arr = map.get(root);
-      if (!arr) {
-        arr = [];
-        map.set(root, arr);
-      }
-      if (arr.indexOf(el) < 0) arr.push(el);
-    });
-    return map;
+  function isUsableVideo(v) {
+    const r = v.getBoundingClientRect();
+    return r.width > 80 && r.height > 60;
   }
 
-  // ---------- 取媒体：接口优先，DOM 兜底 ----------
-  async function fetchStatusMedia(mid) {
-    if (statusCache.has(mid)) return statusCache.get(mid);
-    let items = [];
-    try {
-      const r = await fetch("/ajax/statuses/show?id=" + encodeURIComponent(mid), {
-        credentials: "include",
-        headers: {
-          Accept: "application/json",
-          "X-Requested-With": "XMLHttpRequest"
-        }
+  function hasMedia(root) {
+    if (root.querySelector("video")) return true;
+    const imgs = root.querySelectorAll("img");
+    for (const img of imgs) {
+      if (isUsableImage(img)) return true;
+    }
+    return false;
+  }
+
+  // ---------- 接口：帖子详情 ----------
+  // 微博接口对 XSRF-TOKEN 有校验，缺了可能被当成未登录请求
+  function xsrfHeaders() {
+    const h = { Accept: "application/json", "X-Requested-With": "XMLHttpRequest" };
+    const m = (document.cookie || "").match(/(?:^|;\s*)XSRF-TOKEN=([^;]+)/);
+    if (m) h["X-XSRF-TOKEN"] = decodeURIComponent(m[1]);
+    return h;
+  }
+
+  function getStatus(id) {
+    const path = "/ajax/statuses/show?id=" + encodeURIComponent(id);
+    // 1) 同源直连（weibo.com 页面下都能通，带登录态）
+    return fetch(path, {
+      credentials: "include",
+      headers: xsrfHeaders()
+    })
+      .then((r) => r.text().then((t) => ({ ok: r.ok, text: t })))
+      .catch(() => null)
+      .then((res) => {
+        const parsed = parseJsonSafe(res && res.ok ? res.text : "");
+        if (parsed) return parsed;
+        // 2) 同源不通（s.weibo.com 无此接口 / 跨域被拦）→ 走后台 offscreen 兜底
+        return sendBg({
+          action: "weibo-api",
+          url: "https://weibo.com" + path
+        }).then((resp) => parseJsonSafe(resp && resp.ok ? resp.text : ""));
       });
-      if (r.ok) items = parseStatusMedia(await r.json());
+  }
+
+  function parseJsonSafe(text) {
+    if (!text) return null;
+    const t = String(text).trim();
+    if (!t || t.charAt(0) !== "{") return null; // 微博失败时返回 HTML 登录页，直接排除
+    try {
+      return JSON.parse(t);
     } catch (e) {
-      console.debug(LOG, "接口请求失败", e && e.message);
+      return null;
     }
-    console.debug(LOG, "mid", mid, "取到媒体数", items.length);
-    statusCache.set(mid, items);
-    return items;
   }
 
-  // 从 media_info 里收所有 mp4 地址，按 hd / sd 分类
-  function collectVideoVariants(info) {
-    const v = {};
-    if (!info || typeof info !== "object") return v;
-    const take = (key, url) => {
-      if (!/^https?:/i.test(url || "")) return;
-      if (/hd|high/i.test(key)) {
-        if (!v.hd) v.hd = url;
-      } else if (!v.sd) {
-        v.sd = url;
-      }
-    };
-    if (info.stream_url_hd) take("hd", info.stream_url_hd);
-    if (info.stream_url) take("sd", info.stream_url);
-    for (const k in info) {
-      const val = info[k];
-      if (typeof val === "string" && /^https?:/i.test(val) && /\.mp4|weibocdn|video\.weibo/i.test(val)) {
-        take(k, val);
-      }
-    }
-    return v;
+  // ---------- 接口：视频组件（拿全部分辨率直链）----------
+  function fidOf(mediaInfo) {
+    if (!mediaInfo || typeof mediaInfo !== "object") return null;
+    const h5 = mediaInfo.h5_url || mediaInfo.page_url || "";
+    let m = String(h5).match(/[?&]fid=(\d+:[\w]+)/);
+    if (m) return m[1];
+    m = String(h5).match(/\/tv\/show\/(\d+:[\w]+)/);
+    if (m) return m[1];
+    if (mediaInfo.object_id) return String(mediaInfo.object_id);
+    if (mediaInfo.oid) return String(mediaInfo.oid);
+    return null;
   }
 
-  function parseStatusMedia(json) {
+  function componentVideo(fid) {
+    if (componentCache.has(fid)) return Promise.resolve(componentCache.get(fid));
+    const page = "/tv/show/" + fid;
+    const body =
+      "data=" +
+      encodeURIComponent(JSON.stringify({ Component_Play_Playinfo: { oid: String(fid) } }));
+    const path = "/tv/api/component?page=" + encodeURIComponent(page);
+
+    return fetch(path, {
+      method: "POST",
+      credentials: "include",
+      headers: Object.assign(xsrfHeaders(), {
+        "Content-Type": "application/x-www-form-urlencoded"
+      }),
+      body
+    })
+      .then((r) => r.text().then((t) => ({ ok: r.ok, text: t })))
+      .catch(() => null)
+      .then((res) => {
+        const parsed = parseJsonSafe(res && res.ok ? res.text : "");
+        if (parsed) return parsed;
+        return sendBg({
+          action: "weibo-api",
+          url: "https://weibo.com" + path,
+          method: "POST",
+          body,
+          contentType: "application/x-www-form-urlencoded"
+        }).then((resp) => parseJsonSafe(resp && resp.ok ? resp.text : ""));
+      })
+      .then((json) => {
+        const urls =
+          json && json.data && json.data.Component_Play_Playinfo
+            ? json.data.Component_Play_Playinfo.urls
+            : null;
+        const list = [];
+        if (urls && typeof urls === "object") {
+          for (const key of Object.keys(urls)) {
+            let u = urls[key];
+            if (typeof u !== "string") continue;
+            if (u.indexOf("//") === 0) u = "https:" + u;
+            if (!/^https?:/i.test(u)) continue;
+            const m = key.match(/(\d{3,4})p/);
+            list.push({ url: u, height: m ? parseInt(m[1], 10) : 0 });
+          }
+        }
+        list.sort((a, b) => b.height - a.height); // 高分辨率在前
+        componentCache.set(fid, list);
+        console.debug(LOG, "fid", fid, "组件返回清晰度档数", list.length);
+        return list;
+      });
+  }
+
+  // ---------- 取视频候选 ----------
+  function fixProto(u) {
+    if (typeof u !== "string") return "";
+    if (u.indexOf("//") === 0) return "https:" + u;
+    return /^https?:/i.test(u) ? u : "";
+  }
+
+  function dedupe(list) {
     const out = [];
-    const seen = new Set();
-    const push = (item) => {
-      if (!item || !item.url) return;
-      const key = item.url.split("#")[0];
-      if (seen.has(key)) return;
-      seen.add(key);
-      out.push(item);
-    };
-
-    const root = json && (json.data || json);
-    const list = [root];
-    // 转发微博：媒体常挂在被转发的那条上
-    if (root && root.retweeted_status) list.push(root.retweeted_status);
-
-    for (const s of list) {
-      if (!s || typeof s !== "object") continue;
-
-      const pi = s.page_info;
-      if (pi && pi.media_info) {
-        const v = collectVideoVariants(pi.media_info);
-        if (v.hd || v.sd) {
-          push({ type: "video", url: v.hd || v.sd, variants: v });
-          continue;
-        }
-      }
-
-      if (Array.isArray(s.pics)) {
-        for (const p of s.pics) {
-          const u = (p.large && p.large.url) || p.url;
-          if (u) push({ type: "image", url: u });
-        }
-      } else if (Array.isArray(s.pic_ids) && pi === undefined) {
-        // 极端兜底：只有 pic_ids 时构造不了地址，跳过
-      }
+    for (const u of list) {
+      if (u && out.indexOf(u) < 0) out.push(u);
     }
     return out;
   }
 
+  function videoCandidates(mediaInfo) {
+    if (!mediaInfo || typeof mediaInfo !== "object") return Promise.resolve([]);
+    const bases = [];
+    const push = (u) => {
+      const v = fixProto(u);
+      if (v && bases.indexOf(v) < 0) bases.push(v);
+    };
+
+    // playback_list 是微博新版给的清晰度列表（按清晰度从高到低）
+    if (Array.isArray(mediaInfo.playback_list)) {
+      for (const p of mediaInfo.playback_list) {
+        if (p && p.play_info && p.play_info.url) push(p.play_info.url);
+      }
+    }
+    // 常见字段：高清在前，标清在后
+    ["mp4_1080p_mp4", "mp4_720p_mp4", "mp4_hd_url", "stream_url_hd", "mp4_sd_url", "stream_url", "mp4_url"].forEach(
+      (k) => {
+        if (typeof mediaInfo[k] === "string") push(mediaInfo[k]);
+      }
+    );
+
+    const fid = fidOf(mediaInfo);
+    const viaComponent = fid
+      ? componentVideo(fid).then((list) => list.map((x) => x.url))
+      : Promise.resolve([]);
+
+    return viaComponent.then((comp) => {
+      // 组件接口给的是最完整的档位列表，放最前面
+      const all = dedupe(comp.concat(bases));
+      return settings.videoQuality === "sd" ? all.slice().reverse() : all;
+    });
+  }
+
+  // ---------- 解析接口返回的媒体 ----------
+  function picUrlOf(p) {
+    if (!p || typeof p !== "object") return "";
+    const cands = [
+      p.largest && p.largest.url,
+      p.large && p.large.url,
+      p.pic_big && p.pic_big.url,
+      p.bmiddle && p.bmiddle.url,
+      p.url
+    ];
+    for (const u of cands) {
+      if (u && /^https?:/i.test(u)) return u;
+    }
+    return "";
+  }
+
+  function statusImageUrls(s) {
+    const out = [];
+    const seen = new Set();
+    const push = (u) => {
+      const key = String(u).split("?")[0];
+      if (!u || seen.has(key)) return;
+      seen.add(key);
+      out.push(u);
+    };
+
+    // 新版：pic_infos 是 pic_id → 各档位；pic_ids 给出顺序（九宫格顺序）
+    if (s.pic_infos && typeof s.pic_infos === "object") {
+      const ids = Array.isArray(s.pic_ids) ? s.pic_ids : Object.keys(s.pic_infos);
+      for (const id of ids) {
+        push(picUrlOf(s.pic_infos[id]));
+      }
+      if (!ids.length) {
+        for (const k of Object.keys(s.pic_infos)) push(picUrlOf(s.pic_infos[k]));
+      }
+    } else if (Array.isArray(s.pics)) {
+      for (const p of s.pics) push(picUrlOf(p));
+    }
+    return out;
+  }
+
+  function parseStatus(json) {
+    const root = json && json.data && (json.data.mblogid || json.data.idstr) ? json.data : json;
+    const s = (root && root.retweeted_status) || root;
+    if (!s || typeof s !== "object") return Promise.resolve([]);
+
+    const mix =
+      s.mix_media_info && Array.isArray(s.mix_media_info.items) ? s.mix_media_info.items : null;
+
+    if (!mix) {
+      // 单视频帖：page_info.media_info
+      const mi = s.page_info && s.page_info.media_info;
+      const out = [];
+      const video = mi
+        ? videoCandidates(mi).then((cands) => {
+            if (cands.length) out.push({ type: "video", candidates: cands });
+          })
+        : Promise.resolve();
+      return video.then(() => {
+        // 视频帖的 pic_infos / pics 是视频封面，不是独立配图，不重复计入
+        if (out.some((x) => x.type === "video")) return out;
+        for (const u of statusImageUrls(s)) {
+          out.push({ type: "image", candidates: imageCandidates(u) });
+        }
+        return out;
+      });
+    }
+
+    // 图文 + 视频混排：并发解析但必须保留 items 原始顺序（位次由用户看到的第一张决定）
+    const jobs = [];
+    mix.forEach((it, index) => {
+      if (!it || !it.type) return;
+      const data = it.data || {};
+      if (it.type === "video") {
+        jobs.push(
+          videoCandidates(data.media_info || data).then((cands) => ({
+            index,
+            item: cands.length ? { type: "video", candidates: cands } : null
+          }))
+        );
+      } else if (it.type === "pic") {
+        const u = picUrlOf(data);
+        jobs.push(Promise.resolve({ index, item: u ? { type: "image", candidates: imageCandidates(u) } : null }));
+      }
+    });
+
+    return Promise.all(jobs).then((rows) => {
+      rows.sort((a, b) => a.index - b.index);
+      const out = [];
+      for (const r of rows) {
+        if (r.item) out.push(r.item);
+      }
+      return out.length ? out : parseStatusNoMix(s);
+    });
+  }
+
+  function parseStatusNoMix(s) {
+    const out = [];
+    for (const u of statusImageUrls(s)) {
+      out.push({ type: "image", candidates: imageCandidates(u) });
+    }
+    return out;
+  }
+
+  // ---------- DOM 兜底 ----------
   function domMedia(root) {
     const out = [];
-    const seen = new Set();
-    const push = (item) => {
-      const key = (item.url || "").split(/[?#]/)[0];
-      if (!key || seen.has(key)) return;
-      seen.add(key);
-      out.push(item);
-    };
+    const videos = root.querySelectorAll("video");
+    for (const v of videos) {
+      if (!isUsableVideo(v)) continue;
+      let src = v.currentSrc || v.src || "";
+      if (!/^https?:/i.test(src)) src = v.getAttribute("data-src") || "";
+      if (!/^https?:/i.test(src)) {
+        const so = v.querySelector("source");
+        if (so && /^https?:/i.test(so.src)) src = so.src;
+      }
+      if (/^https?:/i.test(src)) out.push({ type: "video", candidates: [src] });
+    }
 
-    root.querySelectorAll("video").forEach((v) => {
-      if (!isUsableMedia(v)) return;
-      const src =
-        (v.src && /^https?:/.test(v.src) ? v.src : null) ||
-        (v.currentSrc && /^https?:/.test(v.currentSrc) ? v.currentSrc : null) ||
-        (v.getAttribute("data-src") || "").trim() ||
-        ((v.querySelector("source") || {}).src || "");
-      if (/^https?:/.test(src)) push({ type: "video", url: src, variants: {} });
-    });
-    root.querySelectorAll("img").forEach((img) => {
-      if (!isUsableMedia(img)) return;
-      push({ type: "image", url: imageUrlOf(img) });
-    });
+    // 视频是 blob 流、页面又没给 id 时，卡片里通常还有 fid 链接可救
+    if (!out.some((x) => x.type === "video")) {
+      const a = root.querySelector('a[href*="fid="]');
+      if (a) {
+        const m = (a.getAttribute("href") || "").match(/fid=(\d+:[\w]+)/);
+        if (m) {
+          return componentVideo(m[1]).then((list) => {
+            if (list.length) out.push({ type: "video", candidates: list.map((x) => x.url) });
+            return out.concat(domImages(root));
+          });
+        }
+      }
+    }
+
+    return Promise.resolve(out.concat(domImages(root)));
+  }
+
+  function domImages(root) {
+    const out = [];
+    const imgs = root.querySelectorAll("img");
+    for (const img of imgs) {
+      if (!isUsableImage(img)) continue;
+      out.push({ type: "image", candidates: imageCandidates(imageUrlOf(img)) });
+    }
     return out;
   }
 
-  function resolveUrl(item) {
-    if (item.type === "video") {
-      const v = item.variants || {};
-      return settings.videoQuality === "sd"
-        ? v.sd || v.hd || item.url
-        : v.hd || v.sd || item.url;
-    }
-    return applyImageQuality(item.url, settings.imageQuality);
+  // ---------- 汇总：接口优先，DOM 兜底 ----------
+  function mediaOf(root) {
+    const id = postIdOf(root);
+    if (!id) return domMedia(root);
+    if (statusCache.has(id)) return Promise.resolve(statusCache.get(id));
+
+    return getStatus(id)
+      .then((json) => (json ? parseStatus(json) : []))
+      .then((list) => {
+        if (list && list.length) {
+          console.debug(LOG, "id", id, "接口取到媒体数", list.length);
+          statusCache.set(id, list);
+          return list;
+        }
+        console.debug(LOG, "id", id, "接口未取到，改用 DOM 兜底");
+        return domMedia(root);
+      })
+      .catch((e) => {
+        console.debug(LOG, "取媒体失败", e && e.message);
+        return domMedia(root);
+      });
   }
 
   // ---------- 按钮 ----------
@@ -324,28 +598,33 @@
   function errorText(resp) {
     if (chrome.runtime.lastError) return chrome.runtime.lastError.message;
     if (resp && resp.error === "permission") return "文件夹授权已失效，请到插件设置页重新授权";
+    if (resp && resp.error === "media-blocked") return "微博拒绝了该地址（403）或已失效，换一张试试";
+    if (resp && resp.error === "all-fetch-failed") return "全部媒体都下载失败";
     if (resp && resp.error) return String(resp.error);
     return "未知错误";
   }
 
   function downloadItem(btn, item, nameSuffix) {
-    const url = resolveUrl(item);
-    if (!url || !/^https?:/.test(url)) {
+    const candidates = (item.candidates || []).filter((u) => /^https?:/i.test(u));
+    if (!candidates.length) {
       flash(btn, "wb-dl-error");
       showToast("未找到可下载的媒体地址");
       return;
     }
-    chrome.runtime.sendMessage(
-      { action: "download", site: "weibo", url, type: item.type, nameSuffix: nameSuffix || "" },
-      (resp) => {
-        if (chrome.runtime.lastError || !resp || !resp.ok) {
-          flash(btn, "wb-dl-error");
-          showToast("下载失败：" + errorText(resp));
-        } else {
-          flash(btn, "wb-dl-done");
-        }
+    sendBg({
+      action: "download",
+      site: "weibo",
+      type: item.type,
+      candidates,
+      nameSuffix: nameSuffix || ""
+    }).then((resp) => {
+      if (!resp || !resp.ok) {
+        flash(btn, "wb-dl-error");
+        showToast("下载失败：" + errorText(resp));
+      } else {
+        flash(btn, "wb-dl-done");
       }
-    );
+    });
   }
 
   // ---------- 多图选择菜单 ----------
@@ -362,7 +641,9 @@
     "click",
     (ev) => {
       if (!openMenu) return;
-      if (openMenu.contains(ev.target) || ev.target.closest(".wb-dl-btn")) return;
+      const t = ev.target;
+      if (openMenu.contains(t)) return;
+      if (t && t.closest && t.closest(".wb-dl-btn")) return;
       closeMenu();
     },
     true
@@ -392,19 +673,16 @@
       closeMenu();
       if (btn.classList.contains("wb-dl-loading")) return;
       btn.classList.add("wb-dl-loading");
-      const items = list.map((it) => ({ url: resolveUrl(it), type: it.type }));
-      chrome.runtime.sendMessage(
-        { action: "zip", site: "weibo", prefix: "weibo_", items },
-        (resp) => {
-          btn.classList.remove("wb-dl-loading");
-          if (chrome.runtime.lastError || !resp || !resp.ok) {
-            flash(btn, "wb-dl-error");
-            showToast("打包下载失败：" + errorText(resp));
-          } else {
-            flash(btn, "wb-dl-done");
-          }
+      const items = list.map((it) => ({ candidates: it.candidates, type: it.type }));
+      sendBg({ action: "zip", site: "weibo", prefix: "weibo_", items }).then((resp) => {
+        btn.classList.remove("wb-dl-loading");
+        if (!resp || !resp.ok) {
+          flash(btn, "wb-dl-error");
+          showToast("打包下载失败：" + errorText(resp));
+        } else {
+          flash(btn, "wb-dl-done");
         }
-      );
+      });
     });
 
     menu.appendChild(single);
@@ -418,44 +696,45 @@
   }
 
   // ---------- 点击 ----------
-  async function onDownloadClick(ev, root) {
+  function onDownloadClick(ev, root) {
     ev.preventDefault();
     ev.stopPropagation();
     const btn = ev.currentTarget;
     if (btn.classList.contains("wb-dl-loading")) return;
-
-    let list = [];
-    const mid = midOf(root);
-    if (mid) {
-      btn.classList.add("wb-dl-loading");
-      try {
-        list = await fetchStatusMedia(mid);
-      } finally {
-        btn.classList.remove("wb-dl-loading");
-      }
-    }
-
-    if (!list.length) list = domMedia(root);
-
-    if (!list.length) {
-      flash(btn, "wb-dl-error");
-      showToast("未找到可下载的媒体（接口与页面解析均未取到）");
-      return;
-    }
-    if (list.length === 1) {
-      downloadItem(btn, list[0], "");
-      return;
-    }
     if (openMenu) {
       closeMenu();
       return;
     }
-    showMenu(btn, list);
+
+    btn.classList.add("wb-dl-loading");
+    mediaOf(root)
+      .then((list) => {
+        btn.classList.remove("wb-dl-loading");
+        if (!list || !list.length) {
+          flash(btn, "wb-dl-error");
+          showToast("未找到可下载的媒体（接口与页面解析均未取到）");
+          return;
+        }
+        if (list.length === 1) {
+          downloadItem(btn, list[0], "");
+          return;
+        }
+        showMenu(btn, list);
+      })
+      .catch((e) => {
+        btn.classList.remove("wb-dl-loading");
+        flash(btn, "wb-dl-error");
+        showToast("解析失败：" + (e && e.message ? e.message : e));
+      });
   }
 
   function attachTo(root) {
     if (!root || root.hasAttribute(PROCESSED_ATTR)) return;
     if (entries.some((e) => !e.dead && e.root === root)) return;
+    // 多个选择器可能命中同一条微博（外层 [mid] 容器 / 内层 media 容器），
+    // 任一方向已被处理过就跳过，避免一条微博挂两个按钮
+    if (root.closest && root.closest("[" + PROCESSED_ATTR + "]")) return;
+    if (root.querySelector && root.querySelector("[" + PROCESSED_ATTR + "]")) return;
     root.setAttribute(PROCESSED_ATTR, "1");
     const btn = makeButton();
     btn.addEventListener("click", (ev) => onDownloadClick(ev, root), true);
@@ -471,12 +750,12 @@
       );
     });
     document.body.appendChild(btn);
-    const entry = { btn, root };
+    const entry = { btn, root, dead: false };
     entries.push(entry);
     positionEntry(entry);
   }
 
-  // 按钮挂在 card 右侧外部，与 ins 的交互模型一致；
+  // 按钮挂在卡片右侧外部，与 ins 的交互模型一致；
   // 微博正文列右侧常有侧栏，超出视口时向内收，避免飘到侧栏上
   function positionEntry(e) {
     if (!e.root.isConnected) {
@@ -485,8 +764,7 @@
       return;
     }
     const r = e.root.getBoundingClientRect();
-    const visible =
-      r.width > 60 && r.height > 60 && r.top >= 0 && r.top < window.innerHeight;
+    const visible = r.width > 60 && r.height > 60 && r.bottom > 0 && r.top < window.innerHeight;
     if (!visible) {
       e.btn.style.display = "none";
       return;
@@ -523,13 +801,23 @@
 
   function scan() {
     if (!enabled) return;
-    collectItems().forEach((medias, root) => {
-      if (medias.length) attachTo(root);
-    });
+    for (const sel of SEL.roots) {
+      let nodes;
+      try {
+        nodes = document.querySelectorAll(sel);
+      } catch (e) {
+        continue;
+      }
+      for (const root of nodes) {
+        if (root.hasAttribute(PROCESSED_ATTR)) continue;
+        if (!hasMedia(root)) continue;
+        attachTo(root);
+      }
+    }
   }
 
   // 微博信息流 DOM 变动非常频繁（虚拟滚动 + 角标/点赞数实时更新），
-  // 每次 mutation 都全量扫描会卡，这里把扫描节流到 250ms 一次；定位仍走 rAF。
+  // 每次 mutation 都全量扫描会卡，这里把扫描节流到 300ms 一次；定位仍走 rAF。
   let scanTimer = 0;
   const observer = new MutationObserver(() => {
     if (!enabled) return;
@@ -538,30 +826,68 @@
     scanTimer = setTimeout(() => {
       scanTimer = 0;
       scan();
-    }, 250);
+    }, 300);
   });
 
   window.addEventListener("scroll", schedulePosition, true);
   window.addEventListener("resize", schedulePosition);
 
   // 诊断入口：微博页面 DevTools 控制台（选中扩展的隔离世界）里执行
-  //   __wbDl.debug()                          打印当前识别到的每条微博及其媒体数量
+  //   __wbDl.debug()        打印当前识别到的每张卡片：postId / 媒体数 / 媒体类型
+  //   __wbDl.inspect(0)     对第 0 张卡片跑完整取址链路，打印候选地址（排查取址问题用）
+  //   __wbDl.resolve("id")  直接调接口看某条微博解析结果
   //   __wbDl.checkImage("https://wx1.sinaimg.cn/orj360/xxx.jpg")
-  //                                           看某个图片地址能否被识别、换成各档清晰度后的样子
   window.__wbDl = {
+    sel: SEL,
+    // 下面几个纯函数供回归测试直接调用
+    postIdOf,
+    findRoot,
+    parseStatus,
+    imageCandidates,
+    applyImageQuality,
+    isFeedImageUrl,
     debug() {
-      const map = collectItems();
       const rows = [];
-      map.forEach((medias, root) => {
-        rows.push({
-          mid: midOf(root),
-          rootClass: root.className && String(root.className).slice(0, 60),
-          media: medias.length,
-          kinds: medias.map((m) => m.tagName.toLowerCase())
-        });
-      });
+      for (const sel of SEL.roots) {
+        const nodes = document.querySelectorAll(sel);
+        for (const root of nodes) {
+          if (!hasMedia(root)) continue;
+          const medias = root.querySelectorAll("img, video");
+          rows.push({
+            sel,
+            postId: postIdOf(root),
+            media: medias.length,
+            kinds: Array.prototype.map
+              .call(medias, (m) => m.tagName.toLowerCase())
+              .join(",")
+          });
+        }
+      }
       console.table(rows);
       return rows;
+    },
+    inspect(index) {
+      const roots = [];
+      for (const sel of SEL.roots) {
+        for (const root of document.querySelectorAll(sel)) {
+          if (hasMedia(root) && roots.indexOf(root) < 0) roots.push(root);
+        }
+      }
+      const root = roots[index || 0];
+      if (!root) {
+        console.warn(LOG, "没有第", index || 0, "张卡片");
+        return Promise.resolve([]);
+      }
+      return mediaOf(root).then((list) => {
+        console.log(LOG, "postId", postIdOf(root), "媒体数", list.length, list);
+        return list;
+      });
+    },
+    resolve(id) {
+      return getStatus(id).then((json) => {
+        console.log(LOG, "接口返回", json);
+        return json ? parseStatus(json) : null;
+      });
     },
     checkImage(url) {
       const variants = {};
@@ -570,11 +896,13 @@
       });
       const isFeedImage = isFeedImageUrl(url);
       console.log("是正文配图:", isFeedImage, variants);
-      return { isFeedImage, variants };
+      return { isFeedImage, variants, candidates: imageCandidates(url) };
     },
-    parseStatusMedia,
     scan,
-    clearCache: () => statusCache.clear()
+    clearCache: () => {
+      statusCache.clear();
+      componentCache.clear();
+    }
   };
 
   loadState();

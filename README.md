@@ -10,7 +10,7 @@
 
 ![Manifest](https://img.shields.io/badge/Manifest-V3-405DE6?style=flat-square)
 ![Chrome](https://img.shields.io/badge/Chrome-109%2B-4285F4?style=flat-square&logo=googlechrome&logoColor=white)
-![Version](https://img.shields.io/badge/version-1.1.0-2ECC71?style=flat-square)
+![Version](https://img.shields.io/badge/version-1.2.0-2ECC71?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey?style=flat-square)
 
 </div>
@@ -62,7 +62,7 @@ Instagram 网页端没有下载按钮。右键"图片另存为"只能拿到被�
 
 > 需要 Chrome 109+（依赖 `chrome.offscreen` 与 File System Access API）。旧版浏览器请参考下面的"降级行为"。
 >
-> 从 1.0.0 升级到 1.1.0 时新增了微博域名权限，Chrome 可能提示"扩展已更新，需要接受新权限"，重新加载一次即可。
+> 1.2.0 新增了 `declarativeNetRequestWithHostAccess` 权限（给微博图床补 Referer，解决视频 403），Chrome 会提示"扩展已更新，需要接受新权限"，重新加载并接受即可。
 
 ## 使用
 
@@ -155,27 +155,58 @@ Instagram 网页端没有下载按钮。右键"图片另存为"只能拿到被�
 
 ### 微博媒体地址解析
 
-微博的难点不是接口被拦，而是**识别**：信息流是 Vue 虚拟滚动，外层容器类名随构建变化，九宫格图片还是懒加载（`src` 常是占位图）。所以只依赖两样稳定物：
+微博的难点不是接口被拦，而是**识别**：信息流是 Vue 虚拟滚动，容器类名随构建变化，九宫格图片还是懒加载（`src` 常是占位图）。更麻烦的是**微博现在同时存在两套前端**：
 
-- **`mid` 属性**——每条微博的容器上都带，微博自己的 JS 全程依赖它，改版风险最低
-- **`sinaimg.cn` 域名 + 路径首段的尺寸标记**——`/orj360/`、`/mw690/`、`/orj1080/`、`/large/`
+| 页面 | 卡片容器 | 有 `mid` 属性吗 |
+| --- | --- | --- |
+| 新版首页 `weibo.com`、详情页 | `<article class="woo-panel-main">` | ❌ 没有 |
+| 搜索页 `s.weibo.com`、旧版列表 | `<div class="card-wrap" action-type="feed_list_item">` | 有 |
 
-扫描时用通用选择器抓 `img` / `video`，再向上找最近的 `[mid]` 容器，把媒体按容器分组，一条微博一个按钮。即使信息流 DOM 结构大改，只要 `mid` 还在按钮就挂得上。
+所以只认 `[mid]` 会在首页完全失效（v1.1 的实际 bug）。现在改成**最近祖先匹配任一卡片选择器**，帖子 id 分两条取值：
+
+1. 容器有 `mid` / `data-mid` → 直接用
+2. 没有 → 从卡片里的微博链接取 `mblogid`（`/{uid}/{mblogid}`、`/detail/xxx`、`/status/xxx`）
+
+两者都能直接喂给接口。另一个稳定物是 **`sinaimg.cn` + 路径首段的尺寸标记**（`/orj360/`、`/mw690/`、`/large/`）。
 
 | 优先级 | 手段 | 能拿到什么 |
 | --- | --- | --- |
-| 1 | `/ajax/statuses/show?id={mid}` | `pics[]` 全部九宫格 + `page_info.media_info` 的高清/标清流 |
-| 2 | DOM 兜底 | 当前已渲染的 `img` / `video`（视频若是 blob 流则取不到） |
+| 1 | `GET /ajax/statuses/show?id={id}` | `pic_infos` 九宫格原图、`page_info`/`mix_media_info` 视频、图文混排 |
+| 2 | `POST /tv/api/component?page=/tv/show/{fid}` | 视频全部分辨率直链（`mp4_1080p_mp4` / `mp4_720p_mp4` …），最可靠的一档 |
+| 3 | DOM 兜底 | 当前已渲染的 `img` / `video`；视频是 blob 流时再找卡片里的 `fid` 链接救一次 |
+
+> ⚠️ `s.weibo.com` 上**没有** `/ajax/statuses/show` 这个接口，它返回的是 HTML 登录页。所以同源取不到时自动改走 background → offscreen 的代理请求；再不行才落到 DOM。
 
 清晰度不是"多档资源列表"，而是**同一条 URL 换路径首段**：
 
 ```
 https://wx1.sinaimg.cn/orj360/006abc.jpg    ← 页面默认给 360
 https://wx1.sinaimg.cn/mw690/006abc.jpg     ← 690
+https://wx1.sinaimg.cn/orj1080/006abc.jpg   ← 1080（很多图没有这一档）
 https://wx1.sinaimg.cn/large/006abc.jpg     ← 原图
 ```
 
 首段不在白名单时一律不改写——头像（`crop.0.0.180…`）和表情（`m/emoticon`）正是靠这条规则被排除掉的。
+
+#### 为什么下载前要先"探测"
+
+v1.1 下载回来的文件后缀是 `.htm`，根因有两个：
+
+1. **档位不存在**：选 1080P 时把路径首段换成 `orj1080`，但**微博并没有为每张图生成 1080 档**，直接返回 404 的 HTML 错误页；
+2. **接口取错**：`s.weibo.com` 上的同源 `/ajax/statuses/show` 返回 HTML，被当成正常响应。
+
+Chrome 识别到内容是 HTML，就把 `.jpg` 改成了 `.htm`。现在的做法：
+
+```
+候选地址（所选清晰度 → 原图 → 1080）
+      │
+      ├─ offscreen 逐个发 4KB Range 请求
+      ├─ 校验 Content-Type 不是 html/json + 文件头是 jpeg/png/webp/mp4…
+      ├─ 全失败 → 「微博拒绝了该地址（403）或已失效」，不落盘
+      └─ 命中 → 用真实后缀（.jpg/.webp/.mp4）交给 chrome.downloads
+```
+
+顺带解决了视频 403：微博的图床和视频 CDN 会校验 `Referer`，扩展发起的请求默认带 `chrome-extension://` 来源，会被直接拒绝。这里用 `declarativeNetRequest` 会话规则给 `sinaimg.cn` / `weibocdn.com` 的请求补上 `Referer: https://weibo.com/`——只加在这两个 CDN 上，**不动 weibo.com 本身**，避免影响页面自己的 ajax。
 
 ### 按钮为什么挂在 body 上
 
@@ -212,12 +243,16 @@ ins-download/                 ← 加载扩展时选这个文件夹
 
 | 站点 | 命令 | 作用 |
 | --- | --- | --- |
-| 微博 | `__wbDl.debug()` | 打印识别到的每条微博：mid、容器类名、媒体数 |
-| 微博 | `__wbDl.checkImage("图片地址")` | 看该地址是否被判为正文配图、各档清晰度的样子 |
-| 微博 | `__wbDl.clearCache()` | 清掉按 mid 缓存的接口结果，强制重新请求 |
+| 微博 | `__wbDl.debug()` | 打印每张被识别的卡片：命中的选择器、帖子 id、媒体数 |
+| 微博 | `__wbDl.inspect(0)` | 对第 0 张卡片跑完整取址链路，打印所有候选地址（排查"没按钮/下不了"最快） |
+| 微博 | `__wbDl.resolve("帖子id")` | 直接调接口看解析结果 |
+| 微博 | `__wbDl.checkImage("图片地址")` | 看该地址是否被判为正文配图、各档清晰度与候选顺序 |
+| 微博 | `__wbDl.clearCache()` | 清掉接口与视频组件缓存，强制重新请求 |
 | 通用 | `chrome://extensions` → 本扩展 → **检查视图 service worker** | 看后台下载调度与 offscreen 的报错 |
 
-微博侧还有 `[weibo download]` 前缀的日志，会打出每条 mid 实际取到多少媒体。**站点改版时优先看这个**：如果日志里 `取到媒体数 0`，说明接口变了，改 `weibo.js` 顶部的 `SEL` 或 `parseStatusMedia` 即可，其余逻辑不用动。
+微博侧还有 `[weibo download]` 前缀的日志，会打出每条帖子实际取到多少媒体、走了哪条链路。**站点改版时优先看这个**：如果日志里反复出现「接口未取到，改用 DOM 兜底」甚至 `媒体数 0`，改 `weibo.js` 顶部的 `SEL` 或解析函数即可，其余逻辑不用动。
+
+下载成 `.htm` 一类的问题，去 **检查视图 offscreen.html** 看 `probe-media` 的返回：`tried` 数组里会列出每个候选地址的 status / Content-Type，能直接看出是 404、403 还是被换成了错误页。
 
 ## 已知限制
 
@@ -228,7 +263,7 @@ ins-download/                 ← 加载扩展时选这个文件夹
 3. **超大 zip 有内存风险**。默认目录模式下 zip 会转成 dataUrl 字符串跨上下文传递，包体超过 ~100MB 时容易失败。
 4. **视频清晰度选档不精确**（仅 Instagram）。`video_versions[].width` 常为 0，实际会退化为取数组末项。
 5. **Instagram 动画 / Story 的媒体**未做支持。
-6. **微博的选择器与接口未在真实登录态下实测**。开发环境无法访问微博，`weibo.js` 的 `SEL` 与 `parseStatusMedia` 是按接口文档与页面结构推断的。首次使用若没按钮或不下载，请先看 `__wbDl.debug()` 与控制台日志，通常只需改这两处。
+6. **微博的选择器取自公开维护中的同类脚本**（owendswang / firo1603 的「下载微博图片和视频」），接口字段按 `pic_infos` / `playback_list` / `Component_Play_Playinfo` 的实际返回结构实现；但仍未在真实登录态下逐页跑过。若首页没按钮或某类卡片下不了，先跑 `__wbDl.debug()`，通常只需改 `SEL`。
 7. **微博只覆盖信息流与列表页**。微博的「图片查看器」浮层（点开大图后的全屏浏览）、「视频号」独立页、头条文章、私信、Story 类内容未接。
 8. **微博转发微博**取的是被转发那条的媒体（部分场景会同时取到转发者自带的配图）。
 9. 站点改版可能导致解析链失效，Instagram 改 `content.js`，微博改 `weibo.js`。
@@ -254,13 +289,25 @@ ins-download/                 ← 加载扩展时选这个文件夹
 **回归测试**（Node 18+，无需依赖）：
 
 ```bash
-node test/test-weibo.js       # 微博地址识别 / 接口解析 / 清晰度替换，21 项断言
-node test/test-background.js  # ins 与 weibo 的路由隔离、文件前缀、默认目录，17 项断言
+node test/test-weibo.js       # 卡片识别 / 帖子 id 取值 / 接口解析 / 地址候选，32 项断言
+node test/test-offscreen.js   # 文件头识别 / 候选探测 / 拒绝 HTML 错误页 / zip，27 项断言
+node test/test-background.js  # 路由隔离 / 探测协议 / 接口代理 / 请求头规则，39 项断言
 ```
 
-`test-background.js` 会分别模拟一次不带 `site` 的下载（Instagram 路径）和一次 `site: "weibo"` 的下载，断言目录、前缀、`saveAs` 互不影响——改动 background 后跑一遍，能确认没有波及 Instagram。
+三套都是纯 Node、无依赖、直接跑。`test-background.js` 会分别模拟不带 `site` 的下载（Instagram 路径）和 `site: "weibo"` 的下载，断言目录、前缀、`saveAs` 互不影响——改 background 后跑一遍即可确认没有波及 Instagram；`test-offscreen.js` 专门守住「HTML 错误页被当成图片存成 .htm」这个老 bug。
 
 ## 更新日志
+
+### v1.2.0
+
+修复微博侧两个实际 bug，Instagram 逻辑零改动：
+
+- **修 `.htm` 文件**：下载前先由 offscreen 用 4KB Range 探测候选地址，校验 Content-Type 与文件头，跳过 404/403 的 HTML 错误页，按真实格式（jpg/webp/png/mp4…）命名；全部失败则明确报错而不是落一个坏文件
+- **修首页没有按钮**：卡片识别从只认 `[mid]` 改为 `article.woo-panel-main` / `div.card-wrap` / `[action-type=feed_list_item]` / `[mid]` 最近祖先匹配；帖子 id 支持从微博链接取 `mblogid`
+- **接口换新**：`pic_infos` / `pic_ids` 取九宫格原图，`mix_media_info` 支持图文+视频混排，视频新增 `POST /tv/api/component` 拿全部分辨率直链
+- **修视频 403**：用 `declarativeNetRequest` 会话规则给 `sinaimg.cn` / `weibocdn.com` 请求补 `Referer: https://weibo.com/`
+- 图片默认清晰度改为「原图」——微博并非每张图都有 1080 档，之前默认值反而容易取不到
+- 新增 `__wbDl.inspect()` 诊断；测试从 38 项扩到 98 项
 
 ### v1.1.0
 
