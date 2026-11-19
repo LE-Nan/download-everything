@@ -59,6 +59,7 @@ const sandbox = {
       headers: { get: (k) => (k.toLowerCase() === "content-type" ? r.ct : null) },
       // body 为 null → readPrefix 走 arrayBuffer 分支，测试里只需前若干字节
       body: null,
+      blob: async () => new Blob([r.body], { type: r.ct || "" }),
       arrayBuffer: async () => {
         const b = r.body;
         return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
@@ -108,50 +109,96 @@ function check(name, actual, expected) {
   check("JSON 被拒", off.sniffMedia(new Uint8Array(JSONB), "application/json"), null);
   check("空内容被拒", off.sniffMedia(new Uint8Array(0), "image/jpeg"), null);
 
-  console.log("== 3. 探测：跳过 404 的清晰度档，命中可用档 ==");
+  console.log("== 3. 取字节：跳过 404 的清晰度档，命中可用档 ==");
   responder = (url) => {
     if (url.indexOf("/orj1080/") >= 0) return { status: 404, body: HTML, ct: "text/html" };
     if (url.indexOf("/large/") >= 0) return { status: 200, body: JPEG, ct: "image/jpeg" };
     return { status: 403, body: HTML, ct: "text/html" };
   };
-  let r = await off.probeMedia({
-    kind: "image",
-    candidates: [
+  let r = await off.fetchFirstMedia(
+    [
       "https://wx1.sinaimg.cn/orj1080/a.jpg",
       "https://wx1.sinaimg.cn/large/a.jpg",
       "https://wx1.sinaimg.cn/orj360/a.jpg"
-    ]
-  });
-  check("探测成功", r.ok, true);
+    ],
+    "image",
+    false
+  );
+  check("取字节成功", r.ok, true);
   check("落到 large 档", r.url, "https://wx1.sinaimg.cn/large/a.jpg");
   check("后缀是 jpg 而非 htm", r.ext, "jpg");
   check("只试了失败的 1 个候选", r.tried.length, 1);
 
-  console.log("== 4. 探测：全部被拒时明确报错 ==");
+  console.log("== 4. 取字节：全部被拒时明确报错 ==");
   responder = () => ({ status: 403, body: HTML, ct: "text/html" });
-  r = await off.probeMedia({ kind: "image", candidates: ["https://wx1.sinaimg.cn/large/x.jpg"] });
+  r = await off.fetchFirstMedia(["https://wx1.sinaimg.cn/large/x.jpg"], "image", false);
   check("返回 media-blocked", r.error, "media-blocked");
   check("ok 为 false", r.ok, false);
 
-  console.log("== 5. 探测：类型不匹配要跳过（图片请求打到视频）==");
+  console.log("== 5. 取字节：类型不匹配要跳过（图片请求打到视频）==");
   responder = (url) =>
     url.indexOf("v.mp4") >= 0
       ? { status: 200, body: MP4, ct: "video/mp4" }
       : { status: 200, body: JPEG, ct: "image/jpeg" };
-  r = await off.probeMedia({
-    kind: "image",
-    candidates: ["https://f.video.weibocdn.com/v.mp4", "https://wx1.sinaimg.cn/large/b.jpg"]
-  });
+  r = await off.fetchFirstMedia(
+    ["https://f.video.weibocdn.com/v.mp4", "https://wx1.sinaimg.cn/large/b.jpg"],
+    "image",
+    false
+  );
   check("跳过视频，取到图片", r.url, "https://wx1.sinaimg.cn/large/b.jpg");
   check("图片后缀正确", r.ext, "jpg");
 
-  console.log("== 6. 探测：视频请求命中 mp4 ==");
-  r = await off.probeMedia({
-    kind: "video",
-    candidates: ["https://wx1.sinaimg.cn/large/c.jpg", "https://f.video.weibocdn.com/v.mp4"]
-  });
+  console.log("== 6. 取字节：视频请求命中 mp4 ==");
+  r = await off.fetchFirstMedia(
+    ["https://wx1.sinaimg.cn/large/c.jpg", "https://f.video.weibocdn.com/v.mp4"],
+    "video",
+    false
+  );
   check("取到 mp4", r.url, "https://f.video.weibocdn.com/v.mp4");
   check("后缀 mp4", r.ext, "mp4");
+
+  console.log("== 6b. saveMedia：默认目录 → 返回 blob URL（不再让下载器自己去拉）==");
+  responder = (url) =>
+    url.indexOf("/large/") >= 0
+      ? { status: 200, body: JPEG, ct: "image/jpeg" }
+      : { status: 404, body: HTML, ct: "text/html" };
+  const blobRes = await off.saveMedia({
+    candidates: ["https://wx1.sinaimg.cn/orj1080/z.jpg", "https://wx1.sinaimg.cn/large/z.jpg"],
+    kind: "image",
+    fileName: "weibo_image_20260101"
+  });
+  check("保存成功", blobRes.ok, true);
+  check("走 blob 模式", blobRes.saved, "blob");
+  check("返回的是 blob URL", String(blobRes.url).indexOf("blob:") === 0, true);
+  check("后缀按真实文件头", blobRes.ext, "jpg");
+  check("字节数与响应一致", blobRes.size, JPEG.length);
+  check("blob 是 image/jpeg", (await (await fetch(blobRes.url)).blob()).type, "image/jpeg");
+  check("释放 blob", off.releaseBlobSoon(blobRes.url).ok, true);
+
+  console.log("== 6c. saveMedia：自定义目录 → 直接写盘，文件名带真实后缀 ==");
+  written.length = 0;
+  const fsRes = await off.saveMedia({
+    candidates: ["https://wx1.sinaimg.cn/large/y.jpg"],
+    kind: "image",
+    fileName: "weibo_image_20260101",
+    dirKey: "weiboImageDirHandle"
+  });
+  check("保存成功", fsRes.ok, true);
+  check("走写盘模式", fsRes.saved, "fs");
+  check("文件名补上 .jpg", written[0] && written[0].name, "weibo_image_20260101.jpg");
+
+  console.log("== 6d. saveMedia：全部失败时不产生文件 ==");
+  written.length = 0;
+  responder = () => ({ status: 200, body: HTML, ct: "text/html" });
+  const badRes = await off.saveMedia({
+    candidates: ["https://wx1.sinaimg.cn/large/none.jpg"],
+    kind: "image",
+    fileName: "weibo_image_bad",
+    dirKey: "weiboImageDirHandle"
+  });
+  check("返回失败", badRes.ok, false);
+  check("错误码 media-blocked", badRes.error, "media-blocked");
+  check("没有写盘", written.length, 0);
 
   console.log("== 7. zip：候选重试 + 按真实格式命名 ==");
   written.length = 0;

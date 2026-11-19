@@ -12,7 +12,7 @@ const offscreenMsgs = [];
 const dnrRules = [];
 let storageData = {};
 let onMessage = null;
-let probeResult = null;
+let saveResult = null;
 
 const sandbox = {
   console,
@@ -50,13 +50,19 @@ const sandbox = {
       onStartup: { addListener() {} },
       sendMessage: (msg) => {
         offscreenMsgs.push(msg);
-        if (msg && msg.action === "probe-media") {
-          if (probeResult) return Promise.resolve(probeResult);
+        if (msg && msg.action === "save-media") {
+          if (saveResult) return Promise.resolve(saveResult);
           return Promise.resolve({
             ok: true,
-            url: (msg.candidates && msg.candidates[0]) || "",
-            ext: msg.kind === "video" ? "mp4" : "jpg"
+            saved: "blob",
+            url: "blob:chrome-extension://test-extension-id/" + offscreenMsgs.length,
+            ext: msg.kind === "video" ? "mp4" : "jpg",
+            size: 1024
           });
+        }
+        if (msg && msg.action === "release-blob") return Promise.resolve({ ok: true });
+        if (msg && msg.action === "blob-dataurl") {
+          return Promise.resolve({ ok: true, dataUrl: "data:image/jpeg;base64,AAAA" });
         }
         if (msg && msg.action === "weibo-api") {
           return Promise.resolve({ ok: true, status: 200, text: '{"mblogid":"P1"}' });
@@ -112,7 +118,11 @@ const baseName = (filename) => filename.split("/").pop();
   check("落到 ins-download/images", dirOf(downloads[0].filename), "ins-download/images");
   check("文件名前缀 ins_image_", baseName(downloads[0].filename).startsWith("ins_image_"), true);
   check("saveAs 为 false", downloads[0].saveAs, false);
-  check("ins 不做媒体探测（零额外请求）", offscreenMsgs.filter((m) => m.action === "probe-media").length, 0);
+  check(
+    "ins 不走微博取字节链路（零额外请求）",
+    offscreenMsgs.filter((m) => m.action === "save-media").length,
+    0
+  );
 
   console.log("== 2. ins 视频路径（不传 site）==");
   downloads.length = 0;
@@ -120,11 +130,17 @@ const baseName = (filename) => filename.split("/").pop();
   check("落到 ins-download/videos", dirOf(downloads[0].filename), "ins-download/videos");
   check("文件名前缀 ins_video_", baseName(downloads[0].filename).startsWith("ins_video_"), true);
 
-  console.log("== 3. 微博图片：先探测再下载 ==");
+  console.log("== 3. 微博图片（小文件）：offscreen 取字节后以 dataUrl 交付 ==");
   storageData = {};
   downloads.length = 0;
   offscreenMsgs.length = 0;
-  probeResult = { ok: true, url: "https://wx1.sinaimg.cn/large/a.webp", ext: "webp" };
+  saveResult = {
+    ok: true,
+    saved: "blob",
+    url: "blob:chrome-extension://test-extension-id/aaa",
+    ext: "webp",
+    size: 2048
+  };
   r = await send({
     action: "download",
     site: "weibo",
@@ -132,16 +148,41 @@ const baseName = (filename) => filename.split("/").pop();
     candidates: ["https://wx1.sinaimg.cn/orj1080/a.jpg", "https://wx1.sinaimg.cn/large/a.jpg"]
   });
   check("返回 ok", r.ok, true);
-  check("探测收到全部候选", offscreenMsgs[0].candidates.length, 2);
-  check("探测的 kind 是 image", offscreenMsgs[0].kind, "image");
-  check("用探测给出的地址下载", downloads[0].url, "https://wx1.sinaimg.cn/large/a.webp");
-  check("后缀取自探测（不是写死 jpg）", baseName(downloads[0].filename).endsWith(".webp"), true);
+  const saveMsg = offscreenMsgs.find((m) => m.action === "save-media");
+  check("全部候选交给 offscreen", saveMsg.candidates.length, 2);
+  check("取字节的 kind 是 image", saveMsg.kind, "image");
+  check(
+    "小文件走 dataUrl（与已验证的 zip 同一条路）",
+    String(downloads[0].url).indexOf("data:") === 0,
+    true
+  );
+  check("后缀取自真实文件头", baseName(downloads[0].filename).endsWith(".webp"), true);
   check("落到 weibo-download/images", dirOf(downloads[0].filename), "weibo-download/images");
   check("文件名前缀 weibo_image_", baseName(downloads[0].filename).startsWith("weibo_image_"), true);
+  check("下载后释放 blob", offscreenMsgs.some((m) => m.action === "release-blob"), true);
 
-  console.log("== 4. 探测失败时明确报错，不留 .htm 垃圾文件 ==");
+  console.log("== 3b. 大视频：不做 base64，直接交 blob URL ==");
   downloads.length = 0;
-  probeResult = { ok: false, error: "media-blocked", tried: [] };
+  offscreenMsgs.length = 0;
+  saveResult = {
+    ok: true,
+    saved: "blob",
+    url: "blob:chrome-extension://test-extension-id/bbb",
+    ext: "mp4",
+    size: 50 * 1024 * 1024
+  };
+  await send({
+    action: "download",
+    site: "weibo",
+    type: "video",
+    candidates: ["https://f.video.weibocdn.com/o0/big.mp4"]
+  });
+  check("大文件走 blob", String(downloads[0].url).indexOf("blob:") === 0, true);
+  check("大文件不转 base64", offscreenMsgs.filter((m) => m.action === "blob-dataurl").length, 0);
+
+  console.log("== 4. 取字节失败时明确报错，不留 .htm 垃圾文件 ==");
+  downloads.length = 0;
+  saveResult = { ok: false, error: "media-blocked", tried: [] };
   r = await send({
     action: "download",
     site: "weibo",
@@ -152,8 +193,36 @@ const baseName = (filename) => filename.split("/").pop();
   check("错误码 media-blocked", r.error, "media-blocked");
   check("没有触发下载", downloads.length, 0);
 
-  console.log("== 5. 微博视频：探测后落到视频目录 ==");
-  probeResult = null;
+  console.log("== 4b. blob URL 被拒时退回 dataUrl ==");
+  downloads.length = 0;
+  offscreenMsgs.length = 0;
+  saveResult = {
+    ok: true,
+    saved: "blob",
+    url: "blob:chrome-extension://test-extension-id/ccc",
+    ext: "mp4",
+    size: 50 * 1024 * 1024
+  };
+  const origDownload = sandbox.chrome.downloads.download;
+  sandbox.chrome.downloads.download = (opts, cb) => {
+    downloads.push(opts);
+    const isBlob = String(opts.url).indexOf("blob:") === 0;
+    if (isBlob) cb(undefined); // 模拟不支持离屏 blob URL
+    else cb(downloads.length);
+  };
+  await send({
+    action: "download",
+    site: "weibo",
+    type: "video",
+    candidates: ["https://f.video.weibocdn.com/o0/x.mp4"]
+  });
+  check("先试了 blob", String(downloads[0].url).indexOf("blob:") === 0, true);
+  check("重试用了 dataUrl", String(downloads[1].url).indexOf("data:") === 0, true);
+  check("重试仍落到视频目录", dirOf(downloads[1].filename), "weibo-download/videos");
+  sandbox.chrome.downloads.download = origDownload;
+
+  console.log("== 5. 微博视频：取字节后落到视频目录 ==");
+  saveResult = null;
   downloads.length = 0;
   offscreenMsgs.length = 0;
   await send({
@@ -162,16 +231,16 @@ const baseName = (filename) => filename.split("/").pop();
     type: "video",
     candidates: ["https://f.video.weibocdn.com/o0/hd.mp4"]
   });
-  check("探测 kind 是 video", offscreenMsgs[0].kind, "video");
+  check("取字节 kind 是 video", offscreenMsgs.find((m) => m.action === "save-media").kind, "video");
   check("落到 weibo-download/videos", dirOf(downloads[0].filename), "weibo-download/videos");
   check("文件名后缀 mp4", baseName(downloads[0].filename).endsWith(".mp4"), true);
   check("文件名前缀 weibo_video_", baseName(downloads[0].filename).startsWith("weibo_video_"), true);
 
-  console.log("== 6. 微博自定义目录：走 offscreen 写盘 ==");
+  console.log("== 6. 微博自定义目录：走 offscreen 直接写盘 ==");
   storageData = { weiboImageCustom: true };
   downloads.length = 0;
   offscreenMsgs.length = 0;
-  probeResult = null;
+  saveResult = { ok: true, saved: "fs", ext: "jpg", size: 2048 };
   r = await send({
     action: "download",
     site: "weibo",
@@ -179,8 +248,9 @@ const baseName = (filename) => filename.split("/").pop();
     candidates: ["https://wx1.sinaimg.cn/large/a.jpg"]
   });
   check("返回 ok", r.ok, true);
-  const save = offscreenMsgs.find((m) => m.dirKey === "weiboImageDirHandle");
-  check("写入到 weibo 目录句柄", !!save, true);
+  const save = offscreenMsgs.find((m) => m.action === "save-media");
+  check("写入到 weibo 目录句柄", save && save.dirKey, "weiboImageDirHandle");
+  check("文件名不含扩展名（由 offscreen 按真实格式补）", /\.[a-z0-9]+$/i.test(save.fileName), false);
   check("未触发 chrome.downloads", downloads.length, 0);
 
   console.log("== 7. ins 自定义目录键不受微博键影响 ==");
@@ -193,7 +263,7 @@ const baseName = (filename) => filename.split("/").pop();
   console.log("== 8. 自定义目录名覆盖默认 ==");
   storageData = { weiboVideoDir: "我的/微博" };
   downloads.length = 0;
-  probeResult = null;
+  saveResult = null;
   await send({
     action: "download",
     site: "weibo",

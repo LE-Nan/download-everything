@@ -25,11 +25,13 @@
  * 注意：s.weibo.com 上没有 /ajax/statuses/show 这个接口（返回的是 HTML 页面），
  * 所以同源取不到时自动改走 background → offscreen 的跨域兜底。
  *
- * ── 为什么下载地址要交给 offscreen 先探测 ──────────────────
- * 微博图片按「路径首段」区分尺寸，很多图根本没有 orj1080/large 档，直接访问返回
- * 404 HTML；Chrome 识别到 HTML 就把文件后缀改成 .htm（历史 bug）。所以真正下载前
- * 先让 offscreen 用 4KB Range 请求逐个候选地址探测，拿到真实 Content-Type 与文件头，
- * 确定可用地址 + 真实扩展名，再交给 chrome.downloads。
+ * ── 为什么下载必须由 offscreen 取字节 ──────────────────────
+ * 把 CDN 地址直接交给 chrome.downloads 是不行的：下载请求由浏览器发起，
+ * 带的是 chrome-extension:// 来源、没有页面 Referer，微博图床 / 视频 CDN 会
+ * 返回 200 的 HTML 错误页；Chrome 识别到 HTML 就把后缀改成 .htm —— 这就是
+ * 「下载下来是 .htm」的根因（多图 zip 之所以一直正常，正是因为它传的是本地数据）。
+ * 现在改为：offscreen 逐个候选地址取回**真实字节**并嗅探文件头，再由 background
+ * 以 blob / 写盘的方式交付，后缀与 MIME 完全由我们决定，服务器再也没有机会改。
  *
  * ⚠️ 选择器实测自公开维护中的同类脚本（owendswang / firo1603 的「下载微博图片和视频」），
  *    站点改版后应先跑 __wbDl.debug() 核对，只改下面 SEL 一处即可。
@@ -181,8 +183,9 @@
     return m[1] + "/" + (quality || "orj1080") + "/" + m[3] + (m[4] || "");
   }
 
-  // 候选按优先级排列：所选清晰度 → 原图 → 1080。微博并没有为每张图都生成所有档位，
-  // 404 的档位会在 offscreen 探测阶段被跳过，所以这里给足备选。
+  // 候选按优先级排列：所选清晰度 → 原图 → 中间档 → 页面原本给的地址。
+  // 微博并没有为每张图都生成所有档位，404 的档位会在取字节阶段被逐个跳过，
+  // 所以这里给足备选；最后一档「原样地址」是保底——接口/页面给的地址一定真实存在。
   function imageCandidates(url, quality) {
     const q = quality || settings.imageQuality;
     const list = [];
@@ -191,7 +194,11 @@
     };
     push(applyImageQuality(url, q));
     push(applyImageQuality(url, "large"));
+    push(applyImageQuality(url, "mw2000"));
     push(applyImageQuality(url, "orj1080"));
+    push(applyImageQuality(url, "mw690"));
+    push(applyImageQuality(url, "orj360"));
+    push(url);
     return list;
   }
 
@@ -754,13 +761,32 @@
       );
     });
     document.body.appendChild(btn);
-    const entry = { btn, root, dead: false };
+    const entry = { btn, root, dead: false, avatar: null, avatarAt: 0 };
     entries.push(entry);
     positionEntry(entry);
   }
 
+  // ---------- 定位：与卡片头像水平对齐 ----------
+  // 头像 = 卡片左上角那个接近正方形的小图。微博头像地址形如 /crop.0.0.180.180.50/xxx.jpg，
+  // 先按地址特征找；地址对不上（换域名/CDN）再按几何位置兜底，避免一处失效就全歪。
+  function avatarOf(root) {
+    const rr = root.getBoundingClientRect();
+    let geo = null;
+    for (const img of root.querySelectorAll("img")) {
+      const r = img.getBoundingClientRect();
+      if (r.width < 24 || r.width > 88) continue;
+      if (Math.abs(r.width - r.height) > 12) continue;
+      // 必须落在卡片左上角区域，否则会把转发里的头像误认成作者头像
+      if (r.top - rr.top > 150 || r.left - rr.left > 260) continue;
+      const src = img.currentSrc || img.getAttribute("src") || "";
+      if (/\/crop\.|\/avatar\//i.test(src)) return img;
+      if (!geo) geo = img;
+    }
+    return geo;
+  }
+
   // 按钮挂在卡片右侧外部，与 ins 的交互模型一致；
-  // 微博正文列右侧常有侧栏，超出视口时向内收，避免飘到侧栏上
+  // 纵向与卡片头像居中对齐；头像被滑出视口时按钮一并隐藏（不再吸附在卡片顶部）
   function positionEntry(e) {
     if (!e.root.isConnected) {
       e.btn.remove();
@@ -768,15 +794,33 @@
       return;
     }
     const r = e.root.getBoundingClientRect();
-    const visible = r.width > 60 && r.height > 60 && r.bottom > 0 && r.top < window.innerHeight;
+    if (r.width <= 60 || r.height <= 60) {
+      e.btn.style.display = "none";
+      return;
+    }
+
+    // 头像可能被虚拟滚动重建，掉了就重新找；找不到时 2 秒后再试，避免每帧查询
+    if ((!e.avatar || !e.avatar.isConnected) && Date.now() - (e.avatarAt || 0) > 2000) {
+      e.avatar = avatarOf(e.root);
+      e.avatarAt = Date.now();
+    }
+    const ar = e.avatar ? e.avatar.getBoundingClientRect() : null;
+
+    // 可见性判定以头像为准：头像滑过视口顶部（或还在视口下方）时隐藏
+    const visible = ar
+      ? ar.bottom > 8 && ar.top < window.innerHeight
+      : r.bottom > 0 && r.top < window.innerHeight;
     if (!visible) {
       e.btn.style.display = "none";
       return;
     }
-    const left = Math.min(r.right + 8, window.innerWidth - 44);
+
+    const size = 34;
+    const top = ar ? ar.top + (ar.height - size) / 2 : r.top + 12;
+    const left = Math.min(r.right + 8, window.innerWidth - size - 10);
     e.btn.style.display = "";
-    e.btn.style.top = Math.max(8, r.top + 8) + "px";
-    e.btn.style.left = Math.max(8, left) + "px";
+    e.btn.style.top = Math.round(top) + "px";
+    e.btn.style.left = Math.max(8, Math.round(left)) + "px";
   }
 
   function positionAll() {

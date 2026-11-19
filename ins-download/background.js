@@ -178,19 +178,6 @@ if (chrome.runtime.onStartup) {
   });
 }
 
-// 探测候选地址：返回第一个「真能拿到媒体字节」的地址 + 真实扩展名
-async function probeCandidates(candidates, kind) {
-  await ensureWeiboHeaders();
-  await ensureOffscreen();
-  const resp = await chrome.runtime.sendMessage({
-    target: "offscreen",
-    action: "probe-media",
-    candidates,
-    kind
-  });
-  return resp || { ok: false, error: "no-response" };
-}
-
 async function handleWeiboDownload(msg) {
   const { key, prefix } = weiboKeys(msg.type);
   const cfg = await chrome.storage.sync.get([prefix + "Custom", prefix + "Dir"]);
@@ -203,28 +190,78 @@ async function handleWeiboDownload(msg) {
   if (!candidates.length) return { ok: false, error: "no-candidates" };
 
   try {
-    // 先探明哪个地址是真正的媒体（避开 404 HTML / 403 错误页，拿到真实后缀）
-    const probe = await probeCandidates(candidates, key);
-    if (!probe.ok) return probe;
+    await ensureWeiboHeaders();
+    await ensureOffscreen();
 
-    const fileName = base + "." + probe.ext;
+    /* 由 offscreen 取回真实字节再交付，不把地址丢给 chrome.downloads 去拉：
+     * 下载请求没有页面 Referer，微博 CDN 会回 200 的 HTML 错误页，
+     * Chrome 据此把后缀改成 .htm（历史 bug）。字节先行则后缀不可能再被改。
+     */
+    const saved = await chrome.runtime.sendMessage({
+      target: "offscreen",
+      action: "save-media",
+      candidates,
+      kind: key,
+      fileName: base, // 不含扩展名；扩展名由 offscreen 按真实文件头决定
+      dirKey: cfg[prefix + "Custom"] ? prefix + "DirHandle" : null
+    });
+    if (!saved || !saved.ok) return saved || { ok: false, error: "no-response" };
+    if (saved.saved === "fs") return { ok: true };
 
-    if (cfg[prefix + "Custom"]) {
-      await ensureOffscreen();
-      const resp = await chrome.runtime.sendMessage({
-        target: "offscreen",
-        dirKey: prefix + "DirHandle",
-        url: probe.url,
-        fileName,
-        rejectHtml: true
-      });
-      return resp || { ok: false, error: "no-response" };
-    }
-
+    const fileName = base + "." + (saved.ext || (key === "video" ? "mp4" : "jpg"));
     const dir = (cfg[prefix + "Dir"] || WEIBO_DEFAULT_DIR[key]).replace(/^\/+|\/+$/g, "");
-    return downloadViaChrome(probe.url, dir + "/" + fileName);
+    const resp = await deliverBytes(saved, dir + "/" + fileName);
+    releaseBlobLater(saved.url);
+    return resp;
   } catch (e) {
     return { ok: false, error: String(e && e.message ? e.message : e) };
+  }
+}
+
+// 小文件（图片）阈值：低于它直接走 dataUrl
+const SMALL_MEDIA = 6 * 1024 * 1024;
+
+/* 把 offscreen 取回的字节交给下载器。
+ * 小文件优先 dataUrl —— 这条路径与多图 zip 一致，是实测最稳的一条；
+ * 大文件（视频）用 blob URL，避免 base64 膨胀；blob 不被接受时再退回 dataUrl。
+ */
+async function deliverBytes(saved, target) {
+  let dataUrl = null;
+  const asDataUrl = async () => {
+    if (dataUrl) return dataUrl;
+    const conv = await chrome.runtime.sendMessage({
+      target: "offscreen",
+      action: "blob-dataurl",
+      url: saved.url
+    });
+    dataUrl = conv && conv.ok ? conv.dataUrl : null;
+    return dataUrl;
+  };
+
+  if (!saved.size || saved.size <= SMALL_MEDIA) {
+    const d = await asDataUrl();
+    if (d) {
+      const r = await downloadViaChrome(d, target);
+      if (r.ok) return r;
+    }
+  }
+
+  let r = await downloadViaChrome(saved.url, target);
+  if (r.ok) return r;
+  // 少数 Chrome 版本不接受离屏文档创建的 blob URL
+  const d = await asDataUrl();
+  return d ? downloadViaChrome(d, target) : r;
+}
+
+function releaseBlobLater(url) {
+  if (!url) return;
+  try {
+    chrome.runtime.sendMessage(
+      { target: "offscreen", action: "release-blob", url },
+      () => void chrome.runtime.lastError
+    );
+  } catch (e) {
+    /* offscreen 已关闭时忽略 */
   }
 }
 

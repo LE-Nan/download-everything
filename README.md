@@ -10,7 +10,7 @@
 
 ![Manifest](https://img.shields.io/badge/Manifest-V3-405DE6?style=flat-square)
 ![Chrome](https://img.shields.io/badge/Chrome-109%2B-4285F4?style=flat-square&logo=googlechrome&logoColor=white)
-![Version](https://img.shields.io/badge/version-1.2.0-2ECC71?style=flat-square)
+![Version](https://img.shields.io/badge/version-1.2.1-2ECC71?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey?style=flat-square)
 
 </div>
@@ -82,7 +82,9 @@ Instagram 网页端没有下载按钮。右键"图片另存为"只能拿到被�
 - 单图 / 单视频 → 直接下载
 - 九宫格 / 多图 → 弹出两个选项：**只下载第 1 项** 或 **全部下载（N 项，打包 zip）**
 
-按钮位置会自动收进视口内，不会飘到右侧栏上。若某条微博没出现按钮，按 F12 在控制台执行 `__wbDl.debug()` 可以看到它为什么没被识别（详见下面的"调试"）。
+按钮**与卡片头像垂直居中对齐**，代表"这条微博的下载按钮"。头像被滑出视口（上滑刷过去、或卡片还在视口下方）时按钮同步隐藏，不会滞留在屏幕边缘，也不会和微博吸顶导航叠在一起。
+
+按钮横向会自动收进视口内，不会飘到右侧栏上。若某条微博没出现按钮，按 F12 在控制台执行 `__wbDl.debug()` 可以看到它为什么没被识别（详见下面的"调试"）。
 
 ### 设置保存位置
 
@@ -188,23 +190,28 @@ https://wx1.sinaimg.cn/large/006abc.jpg     ← 原图
 
 首段不在白名单时一律不改写——头像（`crop.0.0.180…`）和表情（`m/emoticon`）正是靠这条规则被排除掉的。
 
-#### 为什么下载前要先"探测"
+#### 为什么由 offscreen 取字节，而不是把地址交给下载器
 
-v1.1 下载回来的文件后缀是 `.htm`，根因有两个：
+v1.1 / v1.2.0 下载回来的文件后缀是 `.htm`。根因不止一个，最要命的是最后这条：
 
 1. **档位不存在**：选 1080P 时把路径首段换成 `orj1080`，但**微博并没有为每张图生成 1080 档**，直接返回 404 的 HTML 错误页；
-2. **接口取错**：`s.weibo.com` 上的同源 `/ajax/statuses/show` 返回 HTML，被当成正常响应。
+2. **接口取错**：`s.weibo.com` 上的同源 `/ajax/statuses/show` 返回 HTML，被当成正常响应；
+3. **下载请求和探测请求不是同一个请求**。探测是扩展发起的 `fetch`（带 Referer、带 Range），能拿到真图；而 `chrome.downloads` 是浏览器自己发起的下载请求，没有页面 `Referer`，微博 CDN 会回一个 **200 的 HTML 错误页**。Chrome 拿到 `text/html` 就把后缀改成 `.htm`——这就是单图和视频一直存成 `.htm`、而多图 zip 却正常的原因：**zip 传的是本地数据，不是网络地址**。
 
-Chrome 识别到内容是 HTML，就把 `.jpg` 改成了 `.htm`。现在的做法：
+现在的做法是「字节先行」，彻底绕开第三条：
 
 ```
-候选地址（所选清晰度 → 原图 → 1080）
+候选地址（所选清晰度 → 原图 → 中间档 → 页面原地址）
       │
-      ├─ offscreen 逐个发 4KB Range 请求
+      ├─ offscreen 逐个取回真实字节（resp.blob()，大视频由 Chrome 落盘，不占内存）
       ├─ 校验 Content-Type 不是 html/json + 文件头是 jpeg/png/webp/mp4…
       ├─ 全失败 → 「微博拒绝了该地址（403）或已失效」，不落盘
-      └─ 命中 → 用真实后缀（.jpg/.webp/.mp4）交给 chrome.downloads
+      └─ 命中 → 按真实后缀命名
+            ├─ 有自定义文件夹 → 直接写盘
+            └─ 默认模式 → 生成 blob URL 交给 chrome.downloads（MIME/后缀都由我们定）
 ```
+
+blob 的 `type` 和文件名都是本地决定的，服务器连改后缀的机会都没有；个别 Chrome 版本不接受离屏文档创建的 blob URL 时，会自动退回 `dataUrl`。
 
 顺带解决了视频 403：微博的图床和视频 CDN 会校验 `Referer`，扩展发起的请求默认带 `chrome-extension://` 来源，会被直接拒绝。这里用 `declarativeNetRequest` 会话规则给 `sinaimg.cn` / `weibocdn.com` 的请求补上 `Referer: https://weibo.com/`——只加在这两个 CDN 上，**不动 weibo.com 本身**，避免影响页面自己的 ajax。
 
@@ -252,7 +259,7 @@ ins-download/                 ← 加载扩展时选这个文件夹
 
 微博侧还有 `[weibo download]` 前缀的日志，会打出每条帖子实际取到多少媒体、走了哪条链路。**站点改版时优先看这个**：如果日志里反复出现「接口未取到，改用 DOM 兜底」甚至 `媒体数 0`，改 `weibo.js` 顶部的 `SEL` 或解析函数即可，其余逻辑不用动。
 
-下载成 `.htm` 一类的问题，去 **检查视图 offscreen.html** 看 `probe-media` 的返回：`tried` 数组里会列出每个候选地址的 status / Content-Type，能直接看出是 404、403 还是被换成了错误页。
+下载成 `.htm` 一类的问题，去 **检查视图 offscreen.html** 看控制台：取字节阶段每个失败候选（status / Content-Type）都会记录，能直接看出是 404、403 还是被换成了 HTML 错误页。若报「微博拒绝了该地址」，基本就是候选地址全部被拒，用 `__wbDl.inspect(0)` 把候选列表贴出来即可定位。
 
 ## 已知限制
 
@@ -289,14 +296,25 @@ ins-download/                 ← 加载扩展时选这个文件夹
 **回归测试**（Node 18+，无需依赖）：
 
 ```bash
-node test/test-weibo.js       # 卡片识别 / 帖子 id 取值 / 接口解析 / 地址候选，32 项断言
-node test/test-offscreen.js   # 文件头识别 / 候选探测 / 拒绝 HTML 错误页 / zip，27 项断言
-node test/test-background.js  # 路由隔离 / 探测协议 / 接口代理 / 请求头规则，39 项断言
+node test/test-weibo.js       # 卡片识别 / 帖子 id 取值 / 接口解析 / 地址候选，34 项断言
+node test/test-offscreen.js   # 文件头识别 / 候选重试 / 拒绝 HTML / 取字节交付 / zip，40 项断言
+node test/test-background.js  # 路由隔离 / 字节交付 / dataUrl 回退 / 接口代理 / 请求头规则，46 项断言
 ```
 
-三套都是纯 Node、无依赖、直接跑。`test-background.js` 会分别模拟不带 `site` 的下载（Instagram 路径）和 `site: "weibo"` 的下载，断言目录、前缀、`saveAs` 互不影响——改 background 后跑一遍即可确认没有波及 Instagram；`test-offscreen.js` 专门守住「HTML 错误页被当成图片存成 .htm」这个老 bug。
+三套都是纯 Node、无依赖、直接跑。`test-background.js` 会分别模拟不带 `site` 的下载（Instagram 路径）和 `site: "weibo"` 的下载，断言目录、前缀、`saveAs` 互不影响——改 background 后跑一遍即可确认没有波及 Instagram；`test-offscreen.js` 专门守住「HTML 错误页被当成图片存成 .htm」这个老 bug——它断言下载器拿到的是 `blob:` URL 而不是网络地址，因为一旦让浏览器自己去拉，后缀就会被 CDN 的响应内容改掉。
 
 ## 更新日志
+
+### v1.2.1
+
+修实测暴露的两个残留问题，Instagram 逻辑依旧零改动：
+
+- **修单图 / 视频仍存成 `.htm`**：根因不是后缀写错，而是 `chrome.downloads` 自己去拉地址——下载请求没有页面 `Referer`，微博 CDN 回 200 的 HTML 错误页，Chrome 据此改后缀。改为由 offscreen 取回**真实字节**再交付：图片（≤6MB）走 `dataUrl`（与已验证的 zip 同一条路），视频走 `blob` URL；blob 不被接受时自动退回 `dataUrl`。后缀与 MIME 全由本地决定
+- **视频不再依赖 `chrome.downloads` 二次请求**，顺带彻底规避 Referer/防盗链差异
+- 候选地址补全：所选清晰度 → 原图 → 2000 → 1080 → 690 → 360 → **页面原本给的地址**（保底一定存在）
+- **按钮与卡片头像垂直居中对齐**；头像滑出视口时按钮同步隐藏，不再吸附在屏幕边缘
+- 大视频用 `resp.blob()` 而非 `arrayBuffer()`，交给 Chrome 落盘，避免撑爆离屏文档内存
+- 测试 120 项断言（34 / 40 / 46）
 
 ### v1.2.0
 

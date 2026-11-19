@@ -3,6 +3,8 @@
  *  1) 单文件下载写入用户自定义文件夹（File System Access API）
  *  2) 多张下载：抓取全部媒体 -> 打包 zip -> 写入自定义文件夹，
  *     未设置自定义文件夹时返回 dataUrl 交给 chrome.downloads 下载
+ *  3) 微博：取回真实媒体字节后交回 background（写盘 / blob URL / dataUrl），
+ *     避免浏览器自己去拉地址时被 CDN 的 HTML 错误页改掉后缀
  */
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || msg.target !== "offscreen") return;
@@ -13,8 +15,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse(await handleZip(msg));
         return;
       }
-      if (msg.action === "probe-media") {
-        sendResponse(await probeMedia(msg));
+      if (msg.action === "save-media") {
+        sendResponse(await saveMedia(msg));
+        return;
+      }
+      if (msg.action === "blob-dataurl") {
+        sendResponse(await blobUrlToDataUrl(msg.url));
+        return;
+      }
+      if (msg.action === "release-blob") {
+        sendResponse(releaseBlobSoon(msg.url));
         return;
       }
       if (msg.action === "weibo-api") {
@@ -30,11 +40,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   return true;
 });
 
-/* ---------------- 媒体探测 ----------------
+/* ---------------- 媒体取字节 ----------------
  * 微博图片按「路径首段」区分尺寸，很多图并没有 orj1080 / large 档，直接访问会返回
  * 404 的 HTML；Chrome 识别到内容是 HTML 就把后缀改成 .htm（历史 bug）。
- * 这里先用 4KB Range 请求拿文件头与 Content-Type，确认是真媒体并识别真实格式，
- * 再把「可用地址 + 正确后缀」交回 background 去下载。
+ * 这里逐个候选地址取回真实字节并嗅探文件头，既确认它是真媒体，也拿到真实格式。
  */
 const RANGE_BYTES = 4096;
 
@@ -125,36 +134,124 @@ async function readPrefix(resp, max) {
   return out;
 }
 
-async function probeMedia(msg) {
-  const kind = msg.kind === "video" ? "video" : "image";
-  const list = Array.isArray(msg.candidates) ? msg.candidates : [];
+/* 逐个候选地址试探，返回第一个「真能拿到该类型媒体字节」的地址。
+ * full=false 只读 4KB（探测用）；full=true 拿到完整 Blob（真正保存用）。
+ * 无论哪种模式，HTML/JSON 错误页都会被 sniffMedia 判为「不是媒体」而跳过。
+ * 大视频用 resp.blob() 而不是 arrayBuffer()：Chrome 会把大 Blob 落到磁盘，
+ * 内存里只留引用，避免一个几百 MB 的视频把离屏文档撑爆。
+ */
+async function fetchFirstMedia(candidates, kind, full) {
+  const list = Array.isArray(candidates) ? candidates : [];
   const tried = [];
 
   for (const raw of list) {
     const url = typeof raw === "string" ? raw : raw && raw.url;
     if (!url || !/^https?:/i.test(url)) continue;
     try {
-      const resp = await fetch(url, {
-        credentials: "omit",
-        cache: "no-store",
-        headers: { Range: "bytes=0-" + (RANGE_BYTES - 1) }
-      });
+      const init = { credentials: "omit", cache: "no-store" };
+      if (!full) init.headers = { Range: "bytes=0-" + (RANGE_BYTES - 1) };
+      const resp = await fetch(url, init);
       if (!resp.ok) {
         tried.push({ url, status: resp.status });
         continue;
       }
       const ct = resp.headers.get("content-type") || "";
-      const sniff = sniffMedia(await readPrefix(resp, RANGE_BYTES), ct);
+      let blob = null;
+      let head;
+      if (full) {
+        blob = await resp.blob();
+        head = new Uint8Array(
+          await blob.slice(0, Math.min(blob.size, RANGE_BYTES)).arrayBuffer()
+        );
+      } else {
+        head = await readPrefix(resp, RANGE_BYTES);
+      }
+      const sniff = sniffMedia(head, ct);
       if (!sniff || sniff.kind !== kind) {
         tried.push({ url, status: resp.status, type: ct || "unknown" });
         continue;
       }
-      return { ok: true, url, ext: sniff.ext, mime: sniff.mime || ct, tried };
+      return {
+        ok: true,
+        url,
+        blob,
+        ext: sniff.ext,
+        mime: sniff.mime || ct,
+        size: blob ? blob.size : 0,
+        tried
+      };
     } catch (e) {
       tried.push({ url, error: String(e && e.message ? e.message : e) });
     }
   }
   return { ok: false, error: "media-blocked", tried };
+}
+
+/* ---------------- 单文件保存 ----------------
+ * 为什么不是把地址交给 chrome.downloads 自己拉：
+ *   下载请求由浏览器发起，带的是 chrome-extension:// 来源、没有页面 Referer，
+ *   微博图床 / 视频 CDN 会返回 200 的 HTML 错误页；Chrome 识别到 HTML 就把
+ *   文件名后缀改成 .htm —— 这正是「下载下来是 .htm」的根因。
+ * 所以改成：这里先取回真实字节，再按字节交付：
+ *   有自定义文件夹 → 直接写盘；否则生成 blob URL 交给 background 走下载器。
+ * blob 的 MIME 与文件名都由我们决定，服务器再也没有机会改动后缀。
+ */
+const liveBlobs = new Map(); // blobUrl -> timer
+
+async function saveMedia(msg) {
+  const kind = msg.kind === "video" ? "video" : "image";
+  const got = await fetchFirstMedia(msg.candidates, kind, true);
+  if (!got.ok) return got;
+
+  const mime = got.mime || (kind === "video" ? "video/mp4" : "image/jpeg");
+  // slice 只是换 type 视图，不复制字节
+  const blob = got.blob.slice(0, got.blob.size, mime);
+
+  if (msg.dirKey) {
+    const handle = await getGrantedHandle(msg.dirKey);
+    if (!handle) return { ok: false, error: "permission" };
+    await writeToDir(handle, (msg.fileName || "weibo_media") + "." + got.ext, blob);
+    return { ok: true, saved: "fs", ext: got.ext, size: blob.size };
+  }
+
+  const url = URL.createObjectURL(blob);
+  // 兜底回收：background 正常会主动 release；异常中断时 5 分钟后自清
+  liveBlobs.set(
+    url,
+    setTimeout(() => releaseBlob(url), 5 * 60 * 1000)
+  );
+  return { ok: true, saved: "blob", url, ext: got.ext, size: blob.size };
+}
+
+function releaseBlob(url) {
+  const timer = liveBlobs.get(url);
+  if (timer) {
+    clearTimeout(timer);
+    liveBlobs.delete(url);
+  }
+  try {
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    /* 已释放 */
+  }
+  return { ok: true };
+}
+
+// 下载已开始后延后释放，避免浏览器还没把 blob 读走就失效
+function releaseBlobSoon(url) {
+  if (!url || !liveBlobs.has(url)) return { ok: true };
+  clearTimeout(liveBlobs.get(url));
+  liveBlobs.set(
+    url,
+    setTimeout(() => releaseBlob(url), 60000)
+  );
+  return { ok: true };
+}
+
+async function blobUrlToDataUrl(url) {
+  if (!url) return { ok: false, error: "bad-url" };
+  const blob = await (await fetch(url)).blob();
+  return { ok: true, dataUrl: await blobToDataUrl(blob) };
 }
 
 /* 微博接口代理：页面里同源 fetch 不通时由这里代发（扩展有 host 权限，不受 CORS 限制，
