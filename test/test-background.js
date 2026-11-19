@@ -8,6 +8,7 @@ const vm = require("vm");
 const src = fs.readFileSync(path.join(__dirname, "..", "ins-download", "background.js"), "utf8");
 
 const downloads = [];
+const canceledDownloads = [];
 const offscreenMsgs = [];
 const dnrRules = [];
 const progressMsgs = [];
@@ -39,6 +40,10 @@ const sandbox = {
       download: (opts, cb) => {
         downloads.push(opts);
         cb(downloads.length);
+      },
+      cancel: (id, cb) => {
+        canceledDownloads.push(id);
+        if (cb) cb();
       }
     },
     tabs: {
@@ -460,6 +465,118 @@ const baseName = (filename) => filename.split("/").pop();
   check("取消视为成功（不报错）", cancelRes.ok, true);
   check("标记 canceled", cancelRes.canceled, true);
   check("取消后不再弹第二次保存框", downloads.length, 1);
+
+  console.log("== 13b. 取消：取字节阶段就把 offscreen 的请求断掉 ==");
+  storageData = {};
+  downloads.length = 0;
+  offscreenMsgs.length = 0;
+  progressMsgs.length = 0;
+  canceledDownloads.length = 0;
+  saveResult = null;
+  let releaseFetch;
+  saveGate = new Promise((r) => {
+    releaseFetch = r;
+  });
+
+  let fetchSettled = false;
+  const pCancelFetch = send(
+    {
+      action: "download",
+      site: "weibo",
+      type: "video",
+      candidates: ["https://f.video.weibocdn.com/o0/c1.mp4"],
+      progressId: "c1"
+    },
+    { tab: { id: 66 } }
+  );
+  pCancelFetch.then(() => {
+    fetchSettled = true;
+  });
+  await tick();
+  const c1 = await send({ action: "wb-cancel", progressId: "c1" });
+  check("取消请求返回 ok", c1.ok, true);
+  check(
+    "offscreen 收到 abort",
+    offscreenMsgs.filter((m) => m.target === "offscreen" && m.action === "abort" && m.progressId === "c1")
+      .length,
+    1
+  );
+  check("取字节阶段还没返回", fetchSettled, false);
+
+  releaseFetch();
+  const c1Res = await pCancelFetch;
+  saveGate = null;
+  check("取消后归一成 ok", c1Res.ok, true);
+  check("标记 canceled", c1Res.canceled, true);
+  check("取消后不再弹保存框", downloads.length, 0);
+
+  console.log("== 13c. 取消早于下载请求（连点两下）也要拦住 ==");
+  downloads.length = 0;
+  offscreenMsgs.length = 0;
+  await send({ action: "wb-cancel", progressId: "c2" });
+  await tick();
+  offscreenMsgs.length = 0; // 丢掉 abort 转发本身，只看下载链路
+  const c2Res = await send({
+    action: "download",
+    site: "weibo",
+    type: "image",
+    candidates: ["https://wx1.sinaimg.cn/large/c2.jpg"],
+    progressId: "c2"
+  });
+  check("直接返回 canceled", [c2Res.ok, c2Res.canceled], [true, true]);
+  check("根本不去取字节", offscreenMsgs.filter((m) => m.action === "save-media").length, 0);
+  check("不弹保存框", downloads.length, 0);
+
+  console.log("== 13d. 保存框已弹出时取消：取消那次浏览器下载 ==");
+  downloads.length = 0;
+  offscreenMsgs.length = 0;
+  canceledDownloads.length = 0;
+  dlStates.clear();
+  const pCancelSave = send(
+    {
+      action: "download",
+      site: "weibo",
+      type: "video",
+      candidates: ["https://f.video.weibocdn.com/o0/c3.mp4"],
+      progressId: "c3"
+    },
+    { tab: { id: 55 } }
+  );
+  await tick();
+  check("已发起浏览器下载", downloads.length, 1);
+  // 保存框开着 → in_progress，响应挂起
+  dlStates.set(1, "in_progress");
+  await tick();
+  const c3 = await send({ action: "wb-cancel", progressId: "c3" });
+  check("取消落到 browser download 上", canceledDownloads, [1]);
+  check("取消返回 ok", c3.ok, true);
+  // Chrome 取消后会把状态推到 interrupted/USER_CANCELED
+  dlListener({ id: 1, state: { current: "interrupted" }, error: { current: "USER_CANCELED" } });
+  const c3Res = await pCancelSave;
+  check("最终归一成 canceled", [c3Res.ok, c3Res.canceled], [true, true]);
+  check("不重试第二次保存框", downloads.length, 1);
+
+  console.log("== 13e. 取消之后状态清干净：下一条下载照常 ==");
+  downloads.length = 0;
+  offscreenMsgs.length = 0;
+  saveResult = null;
+  dlStates.clear();
+  dlStates.set(1, "complete"); // 下一条会正常下完
+  const pAfter = send(
+    {
+      action: "download",
+      site: "weibo",
+      type: "image",
+      candidates: ["https://wx1.sinaimg.cn/large/after.jpg"],
+      progressId: "c4"
+    },
+    { tab: { id: 55 } }
+  );
+  await tick();
+  const afterCancel = await pAfter;
+  check("新下载成功", afterCancel.ok, true);
+  check("没有误报 canceled", !!afterCancel.canceled, false);
+  check("正常落到图片目录", dirOf(downloads[0].filename), "weibo-download/images");
 
   console.log("== 14. 没有 progressId 时不发任何进度消息（ins 不受影响）==");
   delete sandbox.chrome.downloads.onChanged;

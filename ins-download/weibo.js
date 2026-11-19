@@ -33,6 +33,12 @@
  * 现在改为：offscreen 逐个候选地址取回**真实字节**并嗅探文件头，再由 background
  * 以 blob / 写盘的方式交付，后缀与 MIME 完全由我们决定，服务器再也没有机会改。
  *
+ * ── 可中断（v1.3.1）────────────────────────────────────────
+ * 按钮点下去就进入加载态，加载态里**再点一次 = 取消**。取消不是只把界面收掉：
+ * 解析阶段本地记一笔直接放弃；取字节 / 打包阶段让 offscreen 断掉 AbortController；
+ * 保存框已弹出则 chrome.downloads.cancel()。三条链路都归一成 "canceled"，
+ * 内容脚本静默复位按钮，不闪红、不重试、不会再弹第二个保存框。
+ *
  * ⚠️ 选择器实测自公开维护中的同类脚本（owendswang / firo1603 的「下载微博图片和视频」），
  *    站点改版后应先跑 __wbDl.debug() 核对，只改下面 SEL 一处即可。
  */
@@ -580,20 +586,28 @@
   }
 
   // ---------- 按钮 ----------
+  const TITLE_IDLE = "下载（微博图片/视频）";
+  const TITLE_BUSY = "下载中，点击取消";
+
   function makeButton() {
     const btn = document.createElement("button");
     btn.className = "wb-dl-btn";
-    btn.title = "下载（微博图片/视频）";
+    btn.title = TITLE_IDLE;
+    // 两个图标叠着放，靠 .wb-dl-progress 切换：下载中显示「停止」方块，
+    // 让「再点一次 = 取消」这件事在视觉上说得通（否则用户以为点了没反应）
     btn.innerHTML =
-      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' +
-      'stroke-linecap="round" stroke-linejoin="round">' +
+      '<svg class="wb-dl-ico wb-dl-ico-dl" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+      'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
       '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>' +
       '<polyline points="7 10 12 15 17 10"/>' +
-      '<line x1="12" y1="15" x2="12" y2="3"/></svg>';
+      '<line x1="12" y1="15" x2="12" y2="3"/></svg>' +
+      '<svg class="wb-dl-ico wb-dl-ico-stop" viewBox="0 0 24 24">' +
+      '<rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>';
     return btn;
   }
 
   function flash(btn, cls) {
+    if (!btn) return;
     btn.classList.add(cls);
     setTimeout(() => btn.classList.remove(cls), 1500);
   }
@@ -608,6 +622,22 @@
    * 下载状态变成 complete，才收尾恢复原样。
    */
   const ring = { pid: null, btn: null, p: 0, ceiling: 12, known: false, timer: 0 };
+
+  /* 已被用户取消的 progressId。取消之后：
+   *   - 正在解析媒体的：解析结果回来也不许再发起下载
+   *   - 正在取字节的：后台断掉请求，响应回来时按 canceled 静默收尾
+   * 用定时清除而不是立即删，是因为取消与响应回来之间还有几个异步跳。 */
+  const canceledIds = new Set();
+
+  function isCanceled(pid) {
+    return !!(pid && canceledIds.has(pid));
+  }
+
+  function markCanceled(pid) {
+    if (!pid) return;
+    canceledIds.add(pid);
+    setTimeout(() => canceledIds.delete(pid), 30000);
+  }
 
   function paintRing() {
     if (ring.btn) ring.btn.style.setProperty("--wb-dl-p", ring.p.toFixed(1));
@@ -632,6 +662,9 @@
     ring.ceiling = 12; // 解析媒体阶段：慢慢爬到 12%
     ring.known = false;
     btn.classList.add("wb-dl-progress");
+    // 提示文案同步换成「点击取消」：按钮此刻是可控的，不再是纯展示
+    btn.title = TITLE_BUSY;
+    btn.setAttribute("aria-label", "取消下载");
     paintRing();
     stopRingTimer();
     ring.timer = setInterval(() => {
@@ -649,6 +682,8 @@
     if (ring.btn) {
       ring.btn.classList.remove("wb-dl-progress");
       ring.btn.style.removeProperty("--wb-dl-p");
+      ring.btn.title = TITLE_IDLE;
+      ring.btn.removeAttribute("aria-label");
     }
     ring.pid = null;
     ring.btn = null;
@@ -686,12 +721,13 @@
     onRingProgress(msg);
   });
 
-  function showToast(text) {
+  // kind 为空是错误提示（红）；"info" 是中性提示（深灰蓝），如「已取消」
+  function showToast(text, kind) {
     const t = document.createElement("div");
-    t.className = "wb-dl-toast";
+    t.className = "wb-dl-toast" + (kind === "info" ? " wb-dl-toast-info" : "");
     t.textContent = text;
     document.body.appendChild(t);
-    setTimeout(() => t.remove(), 5000);
+    setTimeout(() => t.remove(), kind === "info" ? 2200 : 5000);
   }
 
   function errorText(resp) {
@@ -699,8 +735,24 @@
     if (resp && resp.error === "permission") return "文件夹授权已失效，请到插件设置页重新授权";
     if (resp && resp.error === "media-blocked") return "微博拒绝了该地址（403）或已失效，换一张试试";
     if (resp && resp.error === "all-fetch-failed") return "全部媒体都下载失败";
+    if (resp && resp.error === "aborted") return "已取消";
     if (resp && resp.error) return String(resp.error);
     return "未知错误";
+  }
+
+  /* 加载中再次点击 = 取消。分三层收尾：
+   *   1) 立刻把进度环收掉，按钮回到原样（不等后台确认，点击必须有即时反馈）
+   *   2) 通知后台：断掉 offscreen 的取字节请求，若保存框已弹出则一并取消该次下载
+   *   3) 记下 pid，后续回来的响应按 canceled 处理，不闪红、不再弹保存框
+   */
+  function cancelActive(btn) {
+    const pid = ring.pid;
+    if (!pid) return;
+    markCanceled(pid);
+    endRing();
+    flash(btn, "wb-dl-canceled");
+    showToast("已取消下载", "info");
+    sendBg({ action: "wb-cancel", progressId: pid });
   }
 
   function downloadItem(btn, item, nameSuffix, pid) {
@@ -712,6 +764,11 @@
       return;
     }
     const id = pid || newProgressId();
+    // 解析阶段就被取消的，不要把下载再发出去
+    if (isCanceled(id)) {
+      endRing(id);
+      return;
+    }
     if (!pid) startRing(btn, id);
     sendBg({
       action: "download",
@@ -721,6 +778,11 @@
       nameSuffix: nameSuffix || "",
       progressId: id
     }).then((resp) => {
+      // 取消：按静默收尾处理（浏览器下载被取消也走这里，代码 canceled）
+      if (isCanceled(id) || (resp && (resp.canceled || resp.error === "aborted"))) {
+        endRing(id);
+        return;
+      }
       endRing(id);
       if (!resp) {
         // 后台可能被浏览器回收（消息通道断开），此时不要把环留在 100%
@@ -729,7 +791,6 @@
         return;
       }
       if (!resp.ok) {
-        if (resp.canceled) return; // 用户自己点了取消，不算失败
         flash(btn, "wb-dl-error");
         showToast("下载失败：" + errorText(resp));
       } else {
@@ -793,12 +854,16 @@
         items,
         progressId: pid
       }).then((resp) => {
+        // 打包途中取消（或它自己的保存框被取消）：静默收尾
+        if (isCanceled(pid) || (resp && (resp.canceled || resp.error === "aborted"))) {
+          endRing(pid);
+          return;
+        }
         endRing(pid);
         if (!resp) {
           flash(btn, "wb-dl-error");
           showToast("打包请求没有响应，请重试");
         } else if (!resp.ok) {
-          if (resp.canceled) return;
           flash(btn, "wb-dl-error");
           showToast("打包下载失败：" + errorText(resp));
         } else {
@@ -822,9 +887,15 @@
     ev.preventDefault();
     ev.stopPropagation();
     const btn = ev.currentTarget;
-    if (ring.pid) return; // 这条按钮已有下载在进行
     if (openMenu) {
       closeMenu();
+      return;
+    }
+    if (ring.pid) {
+      // 加载中再点一次 = 取消。但只允许取消「自己这条按钮」发起的下载，
+      // 别的卡片正在下载时点它会容易被误解成"我取消了别人"，给个提示就好
+      if (ring.btn === btn) cancelActive(btn);
+      else showToast("正在下载另一条微博，请稍候", "info");
       return;
     }
 
@@ -833,6 +904,8 @@
     startRing(btn, pid);
     mediaOf(root)
       .then((list) => {
+        // 解析期间被用户取消：不再发起下载、也不弹多图菜单
+        if (isCanceled(pid)) return;
         if (!list || !list.length) {
           endRing(pid);
           flash(btn, "wb-dl-error");
@@ -847,6 +920,7 @@
         showMenu(btn, list);
       })
       .catch((e) => {
+        if (isCanceled(pid)) return;
         endRing(pid);
         flash(btn, "wb-dl-error");
         showToast("解析失败：" + (e && e.message ? e.message : e));
@@ -1082,6 +1156,8 @@
   //   __wbDl.inspect(0)     对第 0 张卡片跑完整取址链路，打印候选地址（排查取址问题用）
   //   __wbDl.resolve("id")  直接调接口看某条微博解析结果
   //   __wbDl.checkImage("https://wx1.sinaimg.cn/orj360/xxx.jpg")
+  //   __wbDl.ring()         查看进度环状态（pid / 百分比 / 是否已知总量）
+  //   __wbDl.cancel()       取消当前下载（等价于在加载中的按钮上再点一次）
   window.__wbDl = {
     sel: SEL,
     // 下面几个纯函数供回归测试直接调用
@@ -1091,6 +1167,12 @@
     imageCandidates,
     applyImageQuality,
     isFeedImageUrl,
+    // 进度环 / 取消状态机（回归测试用；也可在控制台手动演练）
+    _makeBtn: makeButton,
+    _startRing: startRing,
+    _endRing: endRing,
+    _cancelActive: cancelActive,
+    _isCanceled: isCanceled,
     debug() {
       const rows = [];
       for (const sel of SEL.roots) {
@@ -1146,6 +1228,16 @@
     scan,
     // 进度环当前状态（排查「点了没反应 / 环不涨」时看这个）
     ring: () => ({ pid: ring.pid, percent: Math.round(ring.p), known: ring.known }),
+    // 等价于在加载中的按钮上再点一次：断掉取字节、取消已发起的下载
+    cancel() {
+      if (!ring.pid) {
+        console.log(LOG, "当前没有进行中的下载");
+        return false;
+      }
+      console.log(LOG, "取消", ring.pid);
+      cancelActive(ring.btn);
+      return true;
+    },
     // 当前检测到的吸顶栏遮挡线（按钮低于这条线就会隐藏）。若按钮仍浮在导航上而
     // 这里返回 0，说明没认出导航容器，把值告诉我即可按实际结构补选择器。
     occlusion: () => {

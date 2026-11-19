@@ -10,7 +10,7 @@
 
 ![Manifest](https://img.shields.io/badge/Manifest-V3-405DE6?style=flat-square)
 ![Chrome](https://img.shields.io/badge/Chrome-109%2B-4285F4?style=flat-square&logo=googlechrome&logoColor=white)
-![Version](https://img.shields.io/badge/version-1.3.0-2ECC71?style=flat-square)
+![Version](https://img.shields.io/badge/version-1.3.1-2ECC71?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey?style=flat-square)
 
 </div>
@@ -271,6 +271,7 @@ ins-download/                 ← 加载扩展时选这个文件夹
 | 微博 | `__wbDl.resolve("帖子id")` | 直接调接口看解析结果 |
 | 微博 | `__wbDl.checkImage("图片地址")` | 看该地址是否被判为正文配图、各档清晰度与候选顺序 |
 | 微博 | `__wbDl.ring()` | 看进度环状态：progressId、当前百分比、总量是否已知 |
+| 微博 | `__wbDl.cancel()` | 取消当前下载（等价于在加载中的按钮上再点一次） |
 | 微博 | `__wbDl.occlusion()` | 看当前识别到的吸顶栏底边（按钮低于这条线即隐藏）；返回 0 说明没认出导航容器 |
 | 微博 | `__wbDl.clearCache()` | 清掉接口与视频组件缓存，强制重新请求 |
 | 通用 | `chrome://extensions` → 本扩展 → **检查视图 service worker** | 看后台下载调度与 offscreen 的报错 |
@@ -314,14 +315,27 @@ ins-download/                 ← 加载扩展时选这个文件夹
 **回归测试**（Node 18+，无需依赖）：
 
 ```bash
-node test/test-weibo.js       # 卡片识别 / 帖子 id 取值 / 接口解析 / 地址候选，34 项断言
-node test/test-offscreen.js   # 文件头识别 / 候选重试 / 拒绝 HTML / 流式进度 / zip，50 项断言
-node test/test-background.js  # 路由隔离 / 字节交付 / 进度回传 / 取消处理 / 请求头规则，64 项断言
+node test/test-weibo.js       # 卡片识别 / 帖子 id 取值 / 接口解析 / 地址候选 / 加载与取消，55 项断言
+node test/test-offscreen.js   # 文件头识别 / 候选重试 / 拒绝 HTML / 流式进度 / 中断 / zip，66 项断言
+node test/test-background.js  # 路由隔离 / 字节交付 / 进度回传 / 取消三段式 / 请求头规则，81 项断言
 ```
 
 三套都是纯 Node、无依赖、直接跑。`test-background.js` 会分别模拟不带 `site` 的下载（Instagram 路径）和 `site: "weibo"` 的下载，断言目录、前缀、`saveAs` 互不影响——改 background 后跑一遍即可确认没有波及 Instagram；`test-offscreen.js` 专门守住「HTML 错误页被当成图片存成 .htm」这个老 bug——它断言下载器拿到的是 `blob:` URL 而不是网络地址，因为一旦让浏览器自己去拉，后缀就会被 CDN 的响应内容改掉。
 
 ## 更新日志
+
+### v1.3.1
+
+给加载过程补上「退出键」。Instagram 逻辑依旧零改动：
+
+- **加载中再点一次按钮 = 取消下载**。在此之前按钮在加载期间是死的（点了只 return），视频那 5～15 秒里用户没有任何退路，点错了只能等
+- **取消分三层落地**，不是只把界面收掉：解析媒体阶段直接放弃后续动作；offscreen 取字节阶段由 `AbortController` 断掉正在进行的 `fetch` 和读流（不再白下几十 MB）；保存框已弹出时调 `chrome.downloads.cancel()` 关掉那次下载
+- **按钮在加载中变成「停止」**：图标从下载箭头换成实心方块，悬停底色转红，`title` 改为「下载中，点击取消」——让"再点一次"这件事在视觉上说得通
+- **取消是静默的**：不再闪红报错、不再重试、不会再弹第二个保存框；进度环立即复位，底部给一条中性提示「已取消下载」
+- **防连点**：一个 `progressId` 贯穿解析 / 取字节 / 保存三个阶段，取消请求即使早于下载请求到达也会被记账（`cancelRequests`），任务开始时先查一次，已取消就直接返回
+- 顺带限制作用域：只有发起这条下载的按钮能取消它，点别的卡片的按钮只提示「正在下载另一条微博」，避免误以为取消了别人的任务
+- `__wbDl.cancel()` 可在控制台手动取消当前下载
+- 测试扩到 202 项断言（55 / 66 / 81）
 
 ### v1.3.0
 

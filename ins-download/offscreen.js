@@ -5,12 +5,18 @@
  *     未设置自定义文件夹时返回 dataUrl 交给 chrome.downloads 下载
  *  3) 微博：取回真实媒体字节后交回 background（写盘 / blob URL / dataUrl），
  *     避免浏览器自己去拉地址时被 CDN 的 HTML 错误页改掉后缀
+ *  4) 可中断：每个带 progressId 的任务配一个 AbortController，background 收到
+ *     取消请求就 forward 过来，正在进行的 fetch 会立刻断开（不再白下几十 MB）
  */
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || msg.target !== "offscreen") return;
 
   (async () => {
     try {
+      if (msg.action === "abort") {
+        sendResponse(abortJob(msg.progressId));
+        return;
+      }
       if (msg.action === "zip") {
         sendResponse(await handleZip(msg));
         return;
@@ -39,6 +45,60 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   return true;
 });
+
+/* ---------------- 任务中断（用户再次点按钮 = 取消）----------------
+ * 一个 progressId 对应一个任务。content script 在下载按钮上再点一次时，
+ * background 会发 action:"abort"，这里把对应任务的 AbortController 断掉：
+ *   - 正在 fetch 的取字节请求 → 立刻中止，不再继续消耗流量
+ *   - 正在读流 / 打包 → 读循环里发现 aborted 主动退出
+ * 取消结果统一用 { ok:false, error:"aborted" } 表示，上层据此静默收尾
+ * （不弹红条、不重试），和「用户自己要取消」的语义保持一致。
+ *
+ * pendingAborts 处理时序：取消消息有可能比任务本身先到（连点两下按钮），
+ * 这时先把 pid 记下来，等真正建 controller 时立刻中止，避免"取消无效"。
+ */
+const controllers = new Map(); // progressId -> AbortController
+const pendingAborts = new Set(); // 取消先于任务到达
+
+function controllerFor(pid) {
+  if (!pid) return null;
+  const exist = controllers.get(pid);
+  if (exist) return exist;
+  const ac = new AbortController();
+  controllers.set(pid, ac);
+  if (pendingAborts.delete(pid)) ac.abort();
+  return ac;
+}
+
+function releaseController(pid) {
+  if (!pid) return;
+  controllers.delete(pid);
+  pendingAborts.delete(pid);
+}
+
+function abortJob(pid) {
+  if (!pid) return { ok: false, error: "no-progress-id" };
+  const ac = controllers.get(pid);
+  if (ac) {
+    ac.abort();
+    return { ok: true, had: true };
+  }
+  pendingAborts.add(pid);
+  // 任务一直没来（或早已结束）时别让集合无限增长
+  setTimeout(() => pendingAborts.delete(pid), 60000);
+  return { ok: true, had: false };
+}
+
+function abortedError(tried) {
+  return { ok: false, error: "aborted", tried: tried || [] };
+}
+
+// 让读循环抛出与 fetch 一致的 AbortError，被同一处 catch 识别
+function abortError() {
+  const err = new Error("aborted");
+  err.name = "AbortError";
+  return err;
+}
 
 /* ---------------- 媒体取字节 ----------------
  * 微博图片按「路径首段」区分尺寸，很多图并没有 orj1080 / large 档，直接访问会返回
@@ -160,8 +220,9 @@ function joinHead(head, chunk) {
 /* 读取完整响应体，边读边回报进度。
  * 先攒够 64 字节就嗅探文件头：不是媒体（HTML 错误页 / JSON）立刻断开，
  * 不会为了一个 403 页面把几十 MB 的错误页拖下来。
+ * signal 被 abort 时抛 AbortError —— 上层据此判定「用户取消」，不再尝试下一个候选。
  */
-async function readAllWithProgress(resp, kind, onProgress) {
+async function readAllWithProgress(resp, kind, onProgress, signal) {
   const ct = resp.headers.get("content-type") || "";
   const total = Number(resp.headers.get("content-length")) || 0;
 
@@ -182,6 +243,15 @@ async function readAllWithProgress(resp, kind, onProgress) {
   let lastAt = 0;
 
   for (;;) {
+    // 有些环境的 fetch 不会因为 abort 而让 read() 立刻抛错，这里再兜一层
+    if (signal && signal.aborted) {
+      try {
+        await reader.cancel();
+      } catch (e) {
+        /* 已结束 */
+      }
+      throw abortError();
+    }
     const step = await reader.read();
     if (step.done) break;
     const chunk = step.value;
@@ -224,16 +294,20 @@ async function readAllWithProgress(resp, kind, onProgress) {
  * full=false 只读 4KB（探测用）；full=true 取完整内容（真正保存用）。
  * 无论哪种模式，HTML/JSON 错误页都会被 sniffMedia 判为「不是媒体」而跳过。
  * full 模式走流式读取：一边下一边把已取字节数报给上层画进度环。
+ * signal 存在时一旦被 abort，立刻返回 aborted —— 不能继续试下一个候选，
+ * 否则用户点了取消还在后台挨个地址拉。
  */
-async function fetchFirstMedia(candidates, kind, full, onProgress) {
+async function fetchFirstMedia(candidates, kind, full, onProgress, signal) {
   const list = Array.isArray(candidates) ? candidates : [];
   const tried = [];
 
   for (const raw of list) {
+    if (signal && signal.aborted) return abortedError(tried);
     const url = typeof raw === "string" ? raw : raw && raw.url;
     if (!url || !/^https?:/i.test(url)) continue;
     try {
       const init = { credentials: "omit", cache: "no-store" };
+      if (signal) init.signal = signal;
       if (!full) init.headers = { Range: "bytes=0-" + (RANGE_BYTES - 1) };
       const resp = await fetch(url, init);
       if (!resp.ok) {
@@ -243,7 +317,7 @@ async function fetchFirstMedia(candidates, kind, full, onProgress) {
       const ct = resp.headers.get("content-type") || "";
 
       if (full) {
-        const got = await readAllWithProgress(resp, kind, onProgress);
+        const got = await readAllWithProgress(resp, kind, onProgress, signal);
         if (got.bad) {
           tried.push({ url, status: resp.status, type: got.ct || "unknown" });
           continue;
@@ -267,6 +341,7 @@ async function fetchFirstMedia(candidates, kind, full, onProgress) {
       }
       return { ok: true, url, blob: null, ext: sniff.ext, mime: sniff.mime || ct, size: 0, tried };
     } catch (e) {
+      if (signal && signal.aborted) return abortedError(tried);
       tried.push({ url, error: String(e && e.message ? e.message : e) });
     }
   }
@@ -287,29 +362,43 @@ const liveBlobs = new Map(); // blobUrl -> timer
 async function saveMedia(msg) {
   const kind = msg.kind === "video" ? "video" : "image";
   const pid = msg.progressId || null;
-  const got = await fetchFirstMedia(msg.candidates, kind, true, (loaded, total) =>
-    reportProgress(pid, loaded, total)
-  );
-  if (!got.ok) return got;
+  const ac = controllerFor(pid);
+  const signal = ac ? ac.signal : null;
 
-  const mime = got.mime || (kind === "video" ? "video/mp4" : "image/jpeg");
-  // slice 只是换 type 视图，不复制字节
-  const blob = got.blob.slice(0, got.blob.size, mime);
+  try {
+    if (signal && signal.aborted) return abortedError();
+    const got = await fetchFirstMedia(
+      msg.candidates,
+      kind,
+      true,
+      (loaded, total) => reportProgress(pid, loaded, total),
+      signal
+    );
+    if (!got.ok) return got;
+    // 字节刚取完就被取消：不建 blob、不写盘，直接收尾
+    if (signal && signal.aborted) return abortedError(got.tried);
 
-  if (msg.dirKey) {
-    const handle = await getGrantedHandle(msg.dirKey);
-    if (!handle) return { ok: false, error: "permission" };
-    await writeToDir(handle, (msg.fileName || "weibo_media") + "." + got.ext, blob);
-    return { ok: true, saved: "fs", ext: got.ext, size: blob.size };
+    const mime = got.mime || (kind === "video" ? "video/mp4" : "image/jpeg");
+    // slice 只是换 type 视图，不复制字节
+    const blob = got.blob.slice(0, got.blob.size, mime);
+
+    if (msg.dirKey) {
+      const handle = await getGrantedHandle(msg.dirKey);
+      if (!handle) return { ok: false, error: "permission" };
+      await writeToDir(handle, (msg.fileName || "weibo_media") + "." + got.ext, blob);
+      return { ok: true, saved: "fs", ext: got.ext, size: blob.size };
+    }
+
+    const url = URL.createObjectURL(blob);
+    // 兜底回收：background 正常会主动 release；异常中断时 5 分钟后自清
+    liveBlobs.set(
+      url,
+      setTimeout(() => releaseBlob(url), 5 * 60 * 1000)
+    );
+    return { ok: true, saved: "blob", url, ext: got.ext, size: blob.size };
+  } finally {
+    releaseController(pid);
   }
-
-  const url = URL.createObjectURL(blob);
-  // 兜底回收：background 正常会主动 release；异常中断时 5 分钟后自清
-  liveBlobs.set(
-    url,
-    setTimeout(() => releaseBlob(url), 5 * 60 * 1000)
-  );
-  return { ok: true, saved: "blob", url, ext: got.ext, size: blob.size };
 }
 
 function releaseBlob(url) {
@@ -405,44 +494,56 @@ async function handleZip(msg) {
   const prefix = msg.prefix || "ins_";
   const pid = msg.progressId || null;
   const total = Array.isArray(msg.items) ? msg.items.length : 0;
+  const ac = controllerFor(pid);
+  const signal = ac ? ac.signal : null;
   const files = [];
-  for (let i = 0; i < msg.items.length; i++) {
-    const item = msg.items[i];
-    const cands =
-      Array.isArray(item.candidates) && item.candidates.length ? item.candidates : [item.url];
-    let got = null;
-    for (const c of cands) {
-      const url = typeof c === "string" ? c : c && c.url;
-      if (!url || !/^https?:/i.test(url)) continue;
-      try {
-        const resp = await fetch(url, { credentials: "omit" });
-        if (!resp.ok) continue; // 跳过失败项，不中断整包
-        const buf = new Uint8Array(await resp.arrayBuffer());
-        const sniff = msg.sniffExt
-          ? sniffMedia(buf.subarray(0, Math.min(buf.length, RANGE_BYTES)), resp.headers.get("content-type"))
-          : null;
-        if (msg.sniffExt && !sniff) continue; // 拿到的是 HTML 错误页，换下一个候选
-        got = { buf, ext: sniff ? sniff.ext : item.type === "video" ? "mp4" : "jpg" };
-        break;
-      } catch (e) {
-        /* 换下一个候选 */
+  try {
+    for (let i = 0; i < msg.items.length; i++) {
+      // 打包也是一项一项取，取消时立刻停手，不把剩下的全拉完
+      if (signal && signal.aborted) return abortedError();
+      const item = msg.items[i];
+      const cands =
+        Array.isArray(item.candidates) && item.candidates.length ? item.candidates : [item.url];
+      let got = null;
+      for (const c of cands) {
+        if (signal && signal.aborted) return abortedError();
+        const url = typeof c === "string" ? c : c && c.url;
+        if (!url || !/^https?:/i.test(url)) continue;
+        try {
+          const init = { credentials: "omit" };
+          if (signal) init.signal = signal;
+          const resp = await fetch(url, init);
+          if (!resp.ok) continue; // 跳过失败项，不中断整包
+          const buf = new Uint8Array(await resp.arrayBuffer());
+          const sniff = msg.sniffExt
+            ? sniffMedia(buf.subarray(0, Math.min(buf.length, RANGE_BYTES)), resp.headers.get("content-type"))
+            : null;
+          if (msg.sniffExt && !sniff) continue; // 拿到的是 HTML 错误页，换下一个候选
+          got = { buf, ext: sniff ? sniff.ext : item.type === "video" ? "mp4" : "jpg" };
+          break;
+        } catch (e) {
+          if (signal && signal.aborted) return abortedError();
+          /* 换下一个候选 */
+        }
       }
+      if (got) files.push({ name: prefix + String(i + 1).padStart(2, "0") + "." + got.ext, data: got.buf });
+      if (pid) reportProgress(pid, i + 1, total);
     }
-    if (got) files.push({ name: prefix + String(i + 1).padStart(2, "0") + "." + got.ext, data: got.buf });
-    if (pid) reportProgress(pid, i + 1, total);
+    if (!files.length) return { ok: false, error: "all-fetch-failed" };
+
+    const zipBlob = InsZip.build(files);
+
+    // 有自定义文件夹：直接写入，无任何弹窗
+    const handle = await getGrantedHandle(msg.dirKey);
+    if (handle) {
+      await writeToDir(handle, msg.zipName, zipBlob);
+      return { ok: true };
+    }
+    if (msg.dirKey) return { ok: false, error: "permission" };
+
+    // 默认模式：返回 dataUrl 由 background 走 chrome.downloads（只弹一次保存框）
+    return { ok: true, dataUrl: await blobToDataUrl(zipBlob) };
+  } finally {
+    releaseController(pid);
   }
-  if (!files.length) return { ok: false, error: "all-fetch-failed" };
-
-  const zipBlob = InsZip.build(files);
-
-  // 有自定义文件夹：直接写入，无任何弹窗
-  const handle = await getGrantedHandle(msg.dirKey);
-  if (handle) {
-    await writeToDir(handle, msg.zipName, zipBlob);
-    return { ok: true };
-  }
-  if (msg.dirKey) return { ok: false, error: "permission" };
-
-  // 默认模式：返回 dataUrl 由 background 走 chrome.downloads（只弹一次保存框）
-  return { ok: true, dataUrl: await blobToDataUrl(zipBlob) };
 }

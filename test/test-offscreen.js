@@ -60,9 +60,10 @@ const sandbox = {
   clearTimeout,
   Blob,
   URL,
+  AbortController,
   TextEncoder,
   TextDecoder,
-  fetch: async (url) => {
+  fetch: async (url, init) => {
     fetchCalls.push(url);
     const r = responder(url);
     if (r.throw) throw new Error("network");
@@ -298,6 +299,85 @@ function check(name, actual, expected) {
   check("退回一次性读取也成功", r.ok, true);
   check("报了一次进度", prog2.length, 1);
   check("无 content-length 时 total 用实际大小", prog2[0][1], JPEG.length);
+
+  console.log("== 11. 取消：取字节中途 abort 立刻收手，不写盘、不换候选 ==");
+  written.length = 0;
+  // 3 块 + 很长，模拟「视频下到一半」
+  responder = () => ({
+    status: 200,
+    ct: "video/mp4",
+    len: MP4.length * 3,
+    stream: makeStream([MP4, MP4, MP4])
+  });
+  const midTask = off.saveMedia({
+    candidates: ["https://f.video.weibocdn.com/o0/mid.mp4", "https://f.video.weibocdn.com/o0/alt.mp4"],
+    kind: "video",
+    fileName: "weibo_video_mid",
+    progressId: "cancel-mid"
+  });
+  const aborted = off.abortJob("cancel-mid");
+  const midRes = await midTask;
+  check("abort 认出有任务", aborted.had, true);
+  check("返回 aborted", midRes.error, "aborted");
+  check("ok 为 false", midRes.ok, false);
+  check("取消后不写盘", written.length, 0);
+  check("取消后不再试后面的候选", fetchCalls.filter((u) => u.indexOf("alt.mp4") >= 0).length, 0);
+
+  console.log("== 11b. 取消先于任务到达（连点两下）也要生效 ==");
+  written.length = 0;
+  fetchCalls.length = 0;
+  responder = () => ({ status: 200, body: JPEG, ct: "image/jpeg" });
+  const early = off.abortJob("cancel-early");
+  check("任务还没来时 abort 也返回 ok", early.ok, true);
+  const earlyRes = await off.saveMedia({
+    candidates: ["https://wx1.sinaimg.cn/large/e.jpg"],
+    kind: "image",
+    fileName: "weibo_image_early",
+    progressId: "cancel-early"
+  });
+  check("直接 aborted", earlyRes.error, "aborted");
+  check("一个请求都不发", fetchCalls.length, 0);
+  check("不写盘", written.length, 0);
+
+  console.log("== 11c. 取消不影响后续正常任务（controller 已释放）==");
+  const afterRes = await off.saveMedia({
+    candidates: ["https://wx1.sinaimg.cn/large/after.jpg"],
+    kind: "image",
+    fileName: "weibo_image_after",
+    progressId: "cancel-mid" // 复用同一个 pid 也必须能重新开始
+  });
+  check("同一个 pid 可再次下载", afterRes.ok, true);
+  check("后缀正确", afterRes.ext, "jpg");
+
+  console.log("== 11d. 打包途中取消：整包放弃，不产出 zip ==");
+  written.length = 0;
+  responder = () => ({ status: 200, body: JPEG, ct: "image/jpeg" });
+  const zipTask = off.handleZip({
+    items: [
+      { candidates: ["https://wx1.sinaimg.cn/large/1.jpg"], type: "image" },
+      { candidates: ["https://wx1.sinaimg.cn/large/2.jpg"], type: "image" }
+    ],
+    zipName: "weibo_cancel.zip",
+    prefix: "weibo_",
+    sniffExt: true,
+    progressId: "cancel-zip",
+    dirKey: "weiboImageDirHandle"
+  });
+  off.abortJob("cancel-zip");
+  const zipCancel = await zipTask;
+  check("打包返回 aborted", zipCancel.error, "aborted");
+  check("没有写出 zip", written.length, 0);
+
+  console.log("== 11e. 没有 progressId 时 abort 是无害的空操作（ins 侧不受影响）==");
+  check("abort(null) 明确报错", off.abortJob(null).error, "no-progress-id");
+  written.length = 0;
+  const insOk = await off.handleZip({
+    items: [{ url: "https://cdninstagram.com/z.jpg", type: "image" }],
+    zipName: "ins_after_cancel.zip",
+    dirKey: "imageDirHandle"
+  });
+  check("ins zip 仍然正常", insOk.ok, true);
+  check("ins 文件正常写出", written.length, 1);
 
   console.log("\n结果: " + pass + " 通过 / " + fail + " 失败");
   process.exit(fail ? 1 : 0);

@@ -34,11 +34,26 @@
   position: relative;
   z-index: 2;
 }
+/* 两个图标只显示一个：平时是下载箭头，下载中换成停止方块 —— 提示「再点一次取消」 */
+.wb-dl-btn .wb-dl-ico-stop {
+  display: none;
+}
+.wb-dl-btn.wb-dl-progress .wb-dl-ico-dl {
+  display: none;
+}
+.wb-dl-btn.wb-dl-progress .wb-dl-ico-stop {
+  display: block;
+  width: 15px;
+  height: 15px;
+}
 .wb-dl-btn.wb-dl-done {
   background: #2ecc71;
 }
 .wb-dl-btn.wb-dl-error {
   background: #e74c3c;
+}
+.wb-dl-btn.wb-dl-canceled {
+  background: #7f8c8d;
 }
 
 /* 下载进度：按钮背景按百分比顺时针填充，已加载部分绿色、未加载留空。
@@ -81,7 +96,13 @@
 }
 .wb-dl-btn.wb-dl-progress {
   background: rgba(0, 0, 0, 0.72);
-  cursor: progress;
+  /* 加载中按钮仍可点（再点一次 = 取消），所以不能是 progress 光标 */
+  cursor: pointer;
+}
+/* 悬停给出「这一下是取消」的信号：底色转红 */
+.wb-dl-btn.wb-dl-progress:hover {
+  background: rgba(192, 57, 43, 0.9);
+  transform: none;
 }
 
 /* 多图选择菜单 */
@@ -126,4 +147,8 @@
   border-radius: 6px;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
   word-break: break-all;
+}
+/* 中性提示（如「已取消下载」）：不用红色，避免看起来像失败 */
+.wb-dl-toast.wb-dl-toast-info {
+  background: #34495e;
 }

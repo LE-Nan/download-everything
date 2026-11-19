@@ -40,6 +40,65 @@ function bindProgress(pid, sender) {
   progressTabs.set(pid, tabId);
 }
 
+/* ---------------- 取消（按钮再点一次）----------------
+ * 一条下载在用户眼里只有「加载中」一个状态，但内部跨了三个阶段，取消要分别处理：
+ *   1) 解析媒体（content script 内部，页面自己处理）
+ *   2) offscreen 取字节 / 打包 → 转成 action:"abort"，断掉 AbortController
+ *   3) 保存框已弹出（chrome.downloads 已登记）→ chrome.downloads.cancel
+ * 另外用 cancelRequests 记一笔：取消消息有可能先于下载请求到达（连点两下），
+ * 任务真正开始时先查这里，已取消就直接返回，避免"取消了还在下"。
+ */
+const cancelRequests = new Map(); // progressId -> 取消时间
+const activeDownloadIds = new Map(); // progressId -> chrome downloadId
+
+// 取消登记只活 30 秒：够覆盖「取消先到、下载后到」的竞态，
+// 又不会因为偶发的空取消让这张表一直涨（service worker 是常驻内存的）
+const CANCEL_TTL_MS = 30 * 1000;
+
+function pruneCancels() {
+  const now = Date.now();
+  for (const [pid, at] of cancelRequests) {
+    if (now - at > CANCEL_TTL_MS) cancelRequests.delete(pid);
+  }
+}
+
+function isCanceled(pid) {
+  return !!(pid && cancelRequests.has(pid));
+}
+
+function requestCancel(pid) {
+  if (!pid) return { ok: false, error: "no-progress-id" };
+  pruneCancels();
+  cancelRequests.set(pid, Date.now());
+  // 1) 停掉 offscreen 里正在进行的取字节 / 打包（没人接收时会报 lastError，吞掉）
+  try {
+    chrome.runtime.sendMessage({ target: "offscreen", action: "abort", progressId: pid }, () =>
+      void chrome.runtime.lastError
+    );
+  } catch (e) {
+    /* offscreen 尚未创建，任务开始时也还没开始取字节，无需处理 */
+  }
+  // 2) 已经弹了保存框：取消这次浏览器下载（会转成 USER_CANCELED，上层静默收尾）
+  const dlId = activeDownloadIds.get(pid);
+  if (dlId !== undefined) cancelChromeDownload(dlId);
+  return { ok: true };
+}
+
+function cancelChromeDownload(downloadId) {
+  if (downloadId === undefined || !chrome.downloads || !chrome.downloads.cancel) return;
+  try {
+    chrome.downloads.cancel(downloadId, () => void chrome.runtime.lastError);
+  } catch (e) {
+    /* 下载已结束 */
+  }
+}
+
+function releaseCancel(pid) {
+  if (!pid) return;
+  cancelRequests.delete(pid);
+  activeDownloadIds.delete(pid);
+}
+
 function notifyProgress(pid, payload) {
   if (!pid) return;
   const tabId = progressTabs.get(pid);
@@ -219,6 +278,13 @@ async function handleWeiboDownload(msg, sender) {
   const pid = msg.progressId || null;
   bindProgress(pid, sender);
 
+  // 连点两下：取消可能比下载请求先到，这里先认账
+  if (isCanceled(pid)) {
+    releaseCancel(pid);
+    releaseProgress(pid);
+    return { ok: true, canceled: true };
+  }
+
   // 兼容旧消息格式（只带 url）
   let candidates = Array.isArray(msg.candidates) ? msg.candidates.filter(Boolean) : [];
   if (!candidates.length && msg.url) candidates = [msg.url];
@@ -236,6 +302,8 @@ async function handleWeiboDownload(msg, sender) {
      * Chrome 据此把后缀改成 .htm（历史 bug）。字节先行则后缀不可能再被改。
      * progressId 一并传下去：offscreen 边下边把已取字节数报回来，
      * 内容脚本据此画进度环——否则视频那 5～15 秒完全是黑盒。
+     * 同一个 progressId 也是取消的凭据：用户再点一次按钮时，
+     * background 会让 offscreen 断掉对应请求。
      */
     const saved = await chrome.runtime.sendMessage({
       target: "offscreen",
@@ -246,6 +314,11 @@ async function handleWeiboDownload(msg, sender) {
       progressId: pid,
       dirKey: cfg[prefix + "Custom"] ? prefix + "DirHandle" : null
     });
+    // 取字节过程中被取消：不报错、不重试，也不建 blob
+    if (isCanceled(pid) || (saved && saved.error === "aborted")) {
+      if (saved && saved.url) releaseBlobLater(saved.url);
+      return { ok: true, canceled: true };
+    }
     if (!saved || !saved.ok) return saved || { ok: false, error: "no-response" };
     if (saved.saved === "fs") {
       // 直接写盘，没有保存框：字节取完即完成
@@ -262,6 +335,7 @@ async function handleWeiboDownload(msg, sender) {
     return { ok: false, error: String(e && e.message ? e.message : e) };
   } finally {
     releaseProgress(pid);
+    releaseCancel(pid);
   }
 }
 
@@ -274,6 +348,8 @@ const SMALL_MEDIA = 6 * 1024 * 1024;
  * pid 存在时，在真正调下载器之前把进度环填满：这一刻保存框正要弹出。
  * 之后一直等到下载结束（用户点保存 / 取消），响应才返回——
  * 内容脚本据此把按钮恢复原样，所以「填满」与「保存框」是联动的。
+ * 下载一旦登记，就把 downloadId 记到 pid 名下：这时用户再点按钮，
+ * 取消可以直接落到这次浏览器下载上（保存框会随之关掉）。
  */
 async function deliverBytes(saved, target, pid) {
   let dataUrl = null;
@@ -292,6 +368,11 @@ async function deliverBytes(saved, target, pid) {
     notifyProgress(pid, { phase: "save" });
     const r = await downloadViaChrome(url, target);
     if (!r.ok) return r;
+    if (pid) {
+      activeDownloadIds.set(pid, r.downloadId);
+      // 保存框弹出来的同一瞬间点了取消：补一刀
+      if (isCanceled(pid)) cancelChromeDownload(r.downloadId);
+    }
     return watchDownload(r.downloadId);
   };
 
@@ -301,13 +382,19 @@ async function deliverBytes(saved, target, pid) {
   if (!saved.size || saved.size <= SMALL_MEDIA) {
     const d = await asDataUrl();
     if (d) {
+      // 转 base64 这一步也可能刚好赶上用户取消：别再去弹保存框
+      if (isCanceled(pid)) return { ok: true, canceled: true };
       const r = await tryDownload(d);
       if (r.ok || r.canceled) return done(r);
     }
   }
 
+  // 取消后不要为了"换个地址重试"再弹一次保存框
+  if (isCanceled(pid)) return { ok: true, canceled: true };
+
   let r = await tryDownload(saved.url);
   if (r.ok || r.canceled) return done(r);
+  if (isCanceled(pid)) return { ok: true, canceled: true };
   // 少数 Chrome 版本不接受离屏文档创建的 blob URL
   const d = await asDataUrl();
   if (!d) return r;
@@ -412,6 +499,12 @@ async function handleWeiboZip(msg, sender) {
   const pid = msg.progressId || null;
   bindProgress(pid, sender);
 
+  if (isCanceled(pid)) {
+    releaseCancel(pid);
+    releaseProgress(pid);
+    return { ok: true, canceled: true };
+  }
+
   try {
     await ensureWeiboHeaders();
     await ensureOffscreen();
@@ -425,11 +518,22 @@ async function handleWeiboZip(msg, sender) {
       progressId: pid, // offscreen 每取完一项报一次，进度环按项数走
       dirKey: cfg[prefix + "Custom"] ? prefix + "DirHandle" : null
     });
+    // 打包途中取消：已取到的字节直接丢弃，不落盘
+    if (isCanceled(pid) || (resp && resp.error === "aborted")) {
+      return { ok: true, canceled: true };
+    }
     if (resp && resp.ok && resp.dataUrl) {
       const dir = (cfg[prefix + "Dir"] || WEIBO_DEFAULT_DIR[key]).replace(/^\/+|\/+$/g, "");
       notifyProgress(pid, { phase: "save" });
       const r = await downloadViaChrome(resp.dataUrl, dir + "/" + zipName);
-      return r.ok ? watchDownload(r.downloadId) : r;
+      if (!r.ok) return r;
+      activeDownloadIds.set(pid, r.downloadId);
+      if (isCanceled(pid)) {
+        cancelChromeDownload(r.downloadId);
+        return { ok: true, canceled: true };
+      }
+      const end = await watchDownload(r.downloadId);
+      return end && end.canceled ? { ok: true, canceled: true } : end;
     }
     if (resp && resp.ok) notifyProgress(pid, { phase: "save" });
     return resp || { ok: false, error: "no-response" };
@@ -437,6 +541,7 @@ async function handleWeiboZip(msg, sender) {
     return { ok: false, error: String(e && e.message ? e.message : e) };
   } finally {
     releaseProgress(pid);
+    releaseCancel(pid);
   }
 }
 
@@ -485,6 +590,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.action === "zip") {
     handleZip(msg, sender).then(sendResponse);
     return true;
+  }
+  // 内容脚本在加载中再次点击按钮 = 取消这条下载
+  if (msg.action === "wb-cancel") {
+    sendResponse(requestCancel(msg.progressId));
+    return;
   }
   if (msg.action === "weibo-api") {
     handleWeiboApi(msg).then(sendResponse);

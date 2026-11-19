@@ -8,23 +8,55 @@ const vm = require("vm");
 const src = fs.readFileSync(path.join(__dirname, "..", "ins-download", "weibo.js"), "utf8");
 
 // ---- 最小环境桩 ----
-const stubEl = () => ({
-  style: {},
-  classList: { add() {}, remove() {}, contains: () => false },
-  addEventListener() {},
-  remove() {},
-  appendChild() {},
-  setAttribute() {},
-  hasAttribute: () => false,
-  getBoundingClientRect: () => ({ width: 0, height: 0, top: 0, left: 0, right: 0, bottom: 0 }),
-  querySelector: () => null,
-  querySelectorAll: () => []
-});
+// 按钮相关的状态全靠 class / style / title 承载，所以这一层要能记账，
+// 否则测不出「加载中 → 取消 → 复位」这条链路
+function stubEl(tag) {
+  const cls = new Set();
+  const styleProps = {};
+  const attrs = {};
+  return {
+    tagName: String(tag || "div").toUpperCase(),
+    title: "",
+    textContent: "",
+    style: {
+      setProperty: (k, v) => {
+        styleProps[k] = v;
+      },
+      removeProperty: (k) => {
+        delete styleProps[k];
+      },
+      getPropertyValue: (k) => (k in styleProps ? styleProps[k] : "")
+    },
+    classList: {
+      add: (c) => cls.add(c),
+      remove: (c) => cls.delete(c),
+      contains: (c) => cls.has(c)
+    },
+    addEventListener() {},
+    remove() {},
+    appendChild() {},
+    setAttribute: (k, v) => {
+      attrs[k] = v;
+    },
+    getAttribute: (k) => (k in attrs ? attrs[k] : null),
+    removeAttribute: (k) => {
+      delete attrs[k];
+    },
+    hasAttribute: (k) => k in attrs,
+    getBoundingClientRect: () => ({ width: 0, height: 0, top: 0, left: 0, right: 0, bottom: 0 }),
+    querySelector: () => null,
+    querySelectorAll: () => []
+  };
+}
+
+const appended = []; // document.body.appendChild 收集到的节点（提示条等）
 
 const sandbox = {
   console,
   setTimeout,
   clearTimeout,
+  setInterval,
+  clearInterval,
   // 网络一律失败：走不到组件接口时 parseStatus 应稳定返回本地字段
   fetch: async () => {
     throw new Error("offline");
@@ -52,7 +84,11 @@ const sandbox = {
     querySelectorAll: () => [],
     addEventListener() {},
     documentElement: {},
-    body: { appendChild() {} },
+    body: {
+      appendChild: (el) => {
+        appended.push(el);
+      }
+    },
     createElement: stubEl
   }
 };
@@ -278,6 +314,56 @@ function chain(nodes) {
   check("空对象不报错", (await wb.parseStatus({})).length, 0);
   check("null 不报错", (await wb.parseStatus(null)).length, 0);
   check("只有文字返回空", (await wb.parseStatus({ mblogid: "P1", text_raw: "hi" })).length, 0);
+
+  console.log("== 11. 加载中：按钮变成可取消状态 ==");
+  const btn = wb._makeBtn();
+  const pid = "wbtest1";
+  wb._startRing(btn, pid);
+  check("进入加载态", btn.classList.contains("wb-dl-progress"), true);
+  check("提示文案换成可取消", btn.title, "下载中，点击取消");
+  check("无障碍标签也换了", btn.getAttribute("aria-label"), "取消下载");
+  check("进度环从 2% 起（点下去立刻有反馈）", btn.style.getPropertyValue("--wb-dl-p"), "2.0");
+  check("ring 记录当前 pid", wb.ring().pid, pid);
+  check("此时还没被取消", wb._isCanceled(pid), false);
+
+  console.log("== 12. 再点一次 = 取消：按钮立刻复位、pid 记入取消 ==");
+  wb._cancelActive(btn);
+  check("退出加载态", btn.classList.contains("wb-dl-progress"), false);
+  check("标题复位", btn.title, "下载（微博图片/视频）");
+  check("移除无障碍标签", btn.getAttribute("aria-label"), null);
+  check("进度环清空", wb.ring().pid, null);
+  check("不再有残值", btn.style.getPropertyValue("--wb-dl-p"), "");
+  check("pid 被记为已取消", wb._isCanceled(pid), true);
+  check("新 pid 不受影响", wb._isCanceled("wbtest2"), false);
+  check(
+    "给了灰色反馈",
+    btn.classList.contains("wb-dl-canceled"),
+    true
+  );
+  check(
+    "弹出中性提示（不是红色报错）",
+    appended.some(
+      (el) => String(el.textContent).indexOf("已取消") >= 0 && el.className.indexOf("wb-dl-toast-info") >= 0
+    ),
+    true
+  );
+
+  console.log("== 13. 别的 pid 收尾不能误清当前进度环 ==");
+  const btn2 = wb._makeBtn();
+  wb._startRing(btn2, "pidA");
+  wb._endRing("pidB");
+  check("别人的 pid 无效", wb.ring().pid, "pidA");
+  check("按钮仍在加载态", btn2.classList.contains("wb-dl-progress"), true);
+  wb._endRing("pidA");
+  check("自己的 pid 才收尾", wb.ring().pid, null);
+  check("按钮已复位", btn2.classList.contains("wb-dl-progress"), false);
+
+  console.log("== 14. 取消后重新开始：新 pid 是干净状态 ==");
+  const btn3 = wb._makeBtn();
+  wb._startRing(btn3, "pidC");
+  check("重新进入加载态", btn3.classList.contains("wb-dl-progress"), true);
+  check("进度重置到起点", btn3.style.getPropertyValue("--wb-dl-p"), "2.0");
+  wb._endRing("pidC");
 
   console.log("\n结果: " + pass + " 通过 / " + fail + " 失败");
   process.exit(fail ? 1 : 0);
