@@ -237,11 +237,15 @@
     return r.width > 80 && r.height > 60;
   }
 
+  // 判断一张卡片里有没有媒体。这里刻意放宽：只要有一张「大到不可能是头像/图标」的图，
+  // 或任意 video，就认为该卡片有媒体 —— 因为真正的地址是靠接口拿的，
+  // 不依赖这张图当前的 src（新版信息流可能是占位图 / 懒加载未触发）。
   function hasMedia(root) {
     if (root.querySelector("video")) return true;
     const imgs = root.querySelectorAll("img");
     for (const img of imgs) {
-      if (isUsableImage(img)) return true;
+      const r = img.getBoundingClientRect();
+      if (r.width >= 100 && r.height >= 80) return true;
     }
     return false;
   }
