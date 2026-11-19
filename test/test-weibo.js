@@ -43,6 +43,7 @@ const sandbox = {
       sendMessage: (msg, cb) => {
         if (cb) cb(null);
       },
+      onMessage: { addListener() {} },
       lastError: null
     }
   },

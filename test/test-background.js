@@ -10,9 +10,11 @@ const src = fs.readFileSync(path.join(__dirname, "..", "ins-download", "backgrou
 const downloads = [];
 const offscreenMsgs = [];
 const dnrRules = [];
+const progressMsgs = [];
 let storageData = {};
 let onMessage = null;
 let saveResult = null;
+let saveGate = null; // 设置后 save-media 会等它 resolve，便于在「取字节中」插入断言
 
 const sandbox = {
   console,
@@ -39,6 +41,11 @@ const sandbox = {
         cb(downloads.length);
       }
     },
+    tabs: {
+      sendMessage: (tabId, msg) => {
+        progressMsgs.push({ tabId, msg });
+      }
+    },
     runtime: {
       lastError: null,
       id: "test-extension-id",
@@ -52,14 +59,17 @@ const sandbox = {
       sendMessage: (msg) => {
         offscreenMsgs.push(msg);
         if (msg && msg.action === "save-media") {
-          if (saveResult) return Promise.resolve(saveResult);
-          return Promise.resolve({
-            ok: true,
-            saved: "blob",
-            url: "blob:chrome-extension://test-extension-id/" + offscreenMsgs.length,
-            ext: msg.kind === "video" ? "mp4" : "jpg",
-            size: 1024
-          });
+          const out =
+            saveResult ||
+            {
+              ok: true,
+              saved: "blob",
+              url: "blob:chrome-extension://test-extension-id/" + offscreenMsgs.length,
+              ext: msg.kind === "video" ? "mp4" : "jpg",
+              size: 1024
+            };
+          if (saveGate) return saveGate.then(() => out);
+          return Promise.resolve(out);
         }
         if (msg && msg.action === "release-blob") return Promise.resolve({ ok: true });
         if (msg && msg.action === "blob-dataurl") {
@@ -87,11 +97,14 @@ const sandbox = {
 vm.createContext(sandbox);
 vm.runInContext(src, sandbox, { filename: "background.js" });
 
-function send(msg) {
+function send(msg, sender) {
   return new Promise((resolve) => {
-    onMessage(msg, {}, resolve);
+    onMessage(msg, sender || {}, resolve);
   });
 }
+
+// 等一轮微任务 + 宏任务，让链路上的 await 全部推进
+const tick = () => new Promise((r) => setTimeout(r, 0));
 
 let pass = 0;
 let fail = 0;
@@ -357,6 +370,108 @@ const baseName = (filename) => filename.split("/").pop();
       rule.condition.requestDomains.indexOf("weibocdn.com") >= 0,
     true
   );
+
+  console.log("== 12. 下载进度：字节数与「填满」都要回传给发起下载的标签页 ==");
+  storageData = {};
+  downloads.length = 0;
+  offscreenMsgs.length = 0;
+  progressMsgs.length = 0;
+  saveResult = null;
+  saveGate = null;
+
+  let dlListener = null;
+  const dlStates = new Map();
+  sandbox.chrome.downloads.onChanged = {
+    addListener: (fn) => {
+      dlListener = fn;
+    },
+    removeListener: (fn) => {
+      if (dlListener === fn) dlListener = null;
+    }
+  };
+  sandbox.chrome.downloads.search = ({ id }, cb) =>
+    cb([{ id, state: dlStates.get(id) || "in_progress" }]);
+
+  // 让 save-media 卡住，模拟「视频还在下载中」
+  let releaseSave;
+  saveGate = new Promise((r) => {
+    releaseSave = r;
+  });
+
+  let settled = false;
+  const p = send(
+    {
+      action: "download",
+      site: "weibo",
+      type: "video",
+      candidates: ["https://f.video.weibocdn.com/o0/p.mp4"],
+      progressId: "p1"
+    },
+    { tab: { id: 77 } }
+  );
+  p.then(() => {
+    settled = true;
+  });
+
+  await tick();
+  onMessage({ action: "wb-fetch-progress", progressId: "p1", loaded: 30, total: 120 }, {}, () => {});
+  await tick();
+  check("进度转发到原标签页", progressMsgs.every((m) => m.tabId === 77), true);
+  check("phase 是 fetch", progressMsgs[0].msg.phase, "fetch");
+  check("已取字节数透传", progressMsgs[0].msg.loaded, 30);
+  check("总字节数透传", progressMsgs[0].msg.total, 120);
+  check("带 progressId 而不是别的 key", progressMsgs[0].msg.id, "p1");
+  check("取字节阶段尚未返回", settled, false);
+
+  releaseSave();
+  await tick();
+  check("下载前已发出 save（填满）", progressMsgs.some((m) => m.msg.phase === "save"), true);
+  check("下载已启动", downloads.length, 1);
+
+  console.log("== 12b. 保存框开着时响应挂起（进度环保持填满），点保存后才返回 ==");
+  dlStates.set(1, "in_progress");
+  await tick();
+  check("in_progress 时不返回", settled, false);
+
+  dlStates.set(1, "complete");
+  dlListener({ id: 1, state: { current: "complete" } });
+  const doneRes = await p;
+  check("完成后才返回", settled, true);
+  check("返回 ok", doneRes.ok, true);
+
+  console.log("== 13. 用户取消保存：静默恢复，不重试、不报错 ==");
+  downloads.length = 0;
+  progressMsgs.length = 0;
+  dlStates.clear();
+  const p2 = send(
+    {
+      action: "download",
+      site: "weibo",
+      type: "video",
+      candidates: ["https://f.video.weibocdn.com/o0/q.mp4"],
+      progressId: "p2"
+    },
+    { tab: { id: 88 } }
+  );
+  await tick();
+  dlStates.set(1, "interrupted");
+  dlListener({ id: 1, state: { current: "interrupted" }, error: { current: "USER_CANCELED" } });
+  const cancelRes = await p2;
+  check("取消视为成功（不报错）", cancelRes.ok, true);
+  check("标记 canceled", cancelRes.canceled, true);
+  check("取消后不再弹第二次保存框", downloads.length, 1);
+
+  console.log("== 14. 没有 progressId 时不发任何进度消息（ins 不受影响）==");
+  delete sandbox.chrome.downloads.onChanged;
+  delete sandbox.chrome.downloads.search;
+  progressMsgs.length = 0;
+  downloads.length = 0;
+  saveResult = null;
+  await send(
+    { action: "download", site: "weibo", type: "image", candidates: ["https://wx1.sinaimg.cn/large/n.jpg"] },
+    { tab: { id: 99 } }
+  );
+  check("无 progressId → 零进度消息", progressMsgs.length, 0);
 
   console.log("\n结果: " + pass + " 通过 / " + fail + " 失败");
   process.exit(fail ? 1 : 0);

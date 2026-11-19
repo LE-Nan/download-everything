@@ -41,6 +41,19 @@ const fakeHandle = {
 const fetchCalls = [];
 let responder = () => ({ status: 404, body: HTML, ct: "text/html" });
 
+// 造一个可读流桩：逐块返回，cancel 时回调（用于断言「发现是 HTML 就断开」）
+function makeStream(chunks, onCancel) {
+  let i = 0;
+  return {
+    getReader: () => ({
+      read: async () => (i < chunks.length ? { done: false, value: chunks[i++] } : { done: true }),
+      cancel: async () => {
+        if (onCancel) onCancel();
+      }
+    })
+  };
+}
+
 const sandbox = {
   console,
   setTimeout,
@@ -56,9 +69,16 @@ const sandbox = {
     return {
       ok: r.status >= 200 && r.status < 300,
       status: r.status,
-      headers: { get: (k) => (k.toLowerCase() === "content-type" ? r.ct : null) },
-      // body 为 null → readPrefix 走 arrayBuffer 分支，测试里只需前若干字节
-      body: null,
+      headers: {
+        get: (k) => {
+          const key = k.toLowerCase();
+          if (key === "content-type") return r.ct;
+          if (key === "content-length") return r.len != null ? String(r.len) : null;
+          return null;
+        }
+      },
+      // stream 存在时走流式读取（进度环路径）；为 null 时退化为 arrayBuffer
+      body: r.stream || null,
       blob: async () => new Blob([r.body], { type: r.ct || "" }),
       arrayBuffer: async () => {
         const b = r.body;
@@ -230,6 +250,54 @@ function check(name, actual, expected) {
   });
   check("ins zip 成功", insZip.ok, true);
   check("ins zip 命名沿用", written[0] && written[0].name, "ins_images.zip");
+
+  console.log("== 9. 流式取字节：边下边报进度（进度环的数据来源）==");
+  const prog = [];
+  responder = () => ({
+    status: 200,
+    ct: "video/mp4",
+    len: MP4.length * 4,
+    stream: makeStream([MP4, MP4, MP4, MP4])
+  });
+  r = await off.fetchFirstMedia(
+    ["https://f.video.weibocdn.com/p.mp4"],
+    "video",
+    true,
+    (loaded, total) => prog.push([loaded, total])
+  );
+  check("取字节成功", r.ok, true);
+  check("字节数 = 4 块", r.size, MP4.length * 4);
+  check("有进度回报", prog.length > 0, true);
+  check("最后一次报的是完整大小", prog[prog.length - 1][0], MP4.length * 4);
+  check("total 取自 content-length", prog[0][1], MP4.length * 4);
+
+  console.log("== 10. 流式取字节：首块就是 HTML 错误页要立刻断开 ==");
+  let cancelled = false;
+  const longHtml = Buffer.from("<!DOCTYPE html><html><body>" + "403 Forbidden ".repeat(6) + "</body></html>");
+  responder = () => ({
+    status: 200,
+    ct: "text/html",
+    len: 999999,
+    stream: makeStream([longHtml, JPEG], () => {
+      cancelled = true;
+    })
+  });
+  r = await off.fetchFirstMedia(["https://wx1.sinaimg.cn/large/x.jpg"], "image", true);
+  check("判为 media-blocked", r.error, "media-blocked");
+  check("主动断开，不把错误页下完", cancelled, true);
+
+  console.log("== 10b. 无可读流时退化为一次性读取，仍报一次完成进度 ==");
+  const prog2 = [];
+  responder = () => ({ status: 200, body: JPEG, ct: "image/jpeg" });
+  r = await off.fetchFirstMedia(
+    ["https://wx1.sinaimg.cn/large/q.jpg"],
+    "image",
+    true,
+    (loaded, total) => prog2.push([loaded, total])
+  );
+  check("退回一次性读取也成功", r.ok, true);
+  check("报了一次进度", prog2.length, 1);
+  check("无 content-length 时 total 用实际大小", prog2[0][1], JPEG.length);
 
   console.log("\n结果: " + pass + " 通过 / " + fail + " 失败");
   process.exit(fail ? 1 : 0);

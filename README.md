@@ -10,7 +10,7 @@
 
 ![Manifest](https://img.shields.io/badge/Manifest-V3-405DE6?style=flat-square)
 ![Chrome](https://img.shields.io/badge/Chrome-109%2B-4285F4?style=flat-square&logo=googlechrome&logoColor=white)
-![Version](https://img.shields.io/badge/version-1.2.1-2ECC71?style=flat-square)
+![Version](https://img.shields.io/badge/version-1.3.0-2ECC71?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey?style=flat-square)
 
 </div>
@@ -82,9 +82,25 @@ Instagram 网页端没有下载按钮。右键"图片另存为"只能拿到被�
 - 单图 / 单视频 → 直接下载
 - 九宫格 / 多图 → 弹出两个选项：**只下载第 1 项** 或 **全部下载（N 项，打包 zip）**
 
-按钮**与卡片头像垂直居中对齐**，代表"这条微博的下载按钮"。头像被滑出视口（上滑刷过去、或卡片还在视口下方）时按钮同步隐藏，不会滞留在屏幕边缘，也不会和微博吸顶导航叠在一起。
+按钮**与卡片头像垂直居中对齐**，代表"这条微博的下载按钮"。头像被滑出视口（上滑刷过去、或卡片还在视口下方）时按钮同步隐藏；**卡片滑到微博吸顶导航下面时按钮一并隐藏**，不会浮在导航栏上。
 
 按钮横向会自动收进视口内，不会飘到右侧栏上。若某条微博没出现按钮，按 F12 在控制台执行 `__wbDl.debug()` 可以看到它为什么没被识别（详见下面的"调试"）。
+
+### 下载进度环（微博）
+
+视频从点击到弹出保存框通常要 5～15 秒，这段时间以前只有一个半透明状态，看不出在动。现在按钮**外圈就是进度条**：
+
+```
+点击 ──▶ 解析媒体（0→12%，按时间缓升）
+      ──▶ 取回字节（按 已取字节 / Content-Length 顺时针绿色填充）
+      ──▶ 填满 100%  ← 保存框此刻弹出
+      ──▶ 点「保存」  ← 按钮恢复原样，填充清除
+```
+
+- 已取回的部分**绿色填充**，未取回的部分**留空**，顺时针推进
+- Content-Length 缺失时按时间缓升，最多到 92%，不会假装完成
+- 保存框开着期间进度环保持填满；点保存（下载状态 `complete`）后才收尾
+- 点「取消」同样恢复原样，不会报错、也不会再弹一次保存框
 
 ### 设置保存位置
 
@@ -297,13 +313,24 @@ ins-download/                 ← 加载扩展时选这个文件夹
 
 ```bash
 node test/test-weibo.js       # 卡片识别 / 帖子 id 取值 / 接口解析 / 地址候选，34 项断言
-node test/test-offscreen.js   # 文件头识别 / 候选重试 / 拒绝 HTML / 取字节交付 / zip，40 项断言
-node test/test-background.js  # 路由隔离 / 字节交付 / 中断回退 / 接口代理 / 请求头规则，49 项断言
+node test/test-offscreen.js   # 文件头识别 / 候选重试 / 拒绝 HTML / 流式进度 / zip，50 项断言
+node test/test-background.js  # 路由隔离 / 字节交付 / 进度回传 / 取消处理 / 请求头规则，64 项断言
 ```
 
 三套都是纯 Node、无依赖、直接跑。`test-background.js` 会分别模拟不带 `site` 的下载（Instagram 路径）和 `site: "weibo"` 的下载，断言目录、前缀、`saveAs` 互不影响——改 background 后跑一遍即可确认没有波及 Instagram；`test-offscreen.js` 专门守住「HTML 错误页被当成图片存成 .htm」这个老 bug——它断言下载器拿到的是 `blob:` URL 而不是网络地址，因为一旦让浏览器自己去拉，后缀就会被 CDN 的响应内容改掉。
 
 ## 更新日志
+
+### v1.3.0
+
+微博侧的体验补完，Instagram 逻辑依旧零改动：
+
+- **下载进度环**：按钮外圈按真实字节数顺时针填充（已加载绿色、未加载留空）。数据由 offscreen 流式读取时逐段上报 → background 转发到发起下载的标签页 → 内容脚本画环；Content-Length 缺失时按时间缓升，封顶 92%
+- **进度与保存框联动**：字节取完立刻填满 100%，此刻保存框弹出；下载状态变为 `complete`（用户点了保存）后按钮才恢复原样。用户点取消同样静默恢复，不重试、不报错
+- **流式取字节**：不再一次性 `resp.blob()`，改为 `getReader()` 逐段读取，首块就嗅探文件头——是 HTML 错误页立刻断开，不白下几十 MB
+- **修按钮浮在吸顶导航上**：用 `elementFromPoint` 探出微博顶部栏的底边，按钮纵向位置低于该线时隐藏；探测不到时退化为在头像处做命中测试兜底
+- 多图打包也走同一套进度环（按已处理项数推进）
+- 测试扩到 148 项断言（34 / 50 / 64）
 
 ### v1.2.1
 

@@ -27,6 +27,39 @@ function timestamp() {
   return new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14);
 }
 
+/* 下载进度回传：内容脚本发下载请求时带一个 progressId，这里记住它来自哪个标签页，
+ * 之后 offscreen 边下边报的字节数、以及「字节已取完」这些事件都转发回该标签页。
+ * 与 ins 完全无关——ins 的消息不带 progressId，下面所有函数都会直接返回。
+ */
+const progressTabs = new Map(); // progressId -> tabId
+
+function bindProgress(pid, sender) {
+  if (!pid) return;
+  const tabId = sender && sender.tab ? sender.tab.id : undefined;
+  if (tabId === undefined) return;
+  progressTabs.set(pid, tabId);
+}
+
+function notifyProgress(pid, payload) {
+  if (!pid) return;
+  const tabId = progressTabs.get(pid);
+  if (tabId === undefined) return;
+  if (!chrome.tabs || !chrome.tabs.sendMessage) return;
+  try {
+    chrome.tabs.sendMessage(
+      tabId,
+      Object.assign({ type: "wb-dl-progress", id: pid }, payload),
+      () => void chrome.runtime.lastError
+    );
+  } catch (e) {
+    /* 页面已关闭或标签页已销毁，忽略 */
+  }
+}
+
+function releaseProgress(pid) {
+  if (pid) progressTabs.delete(pid);
+}
+
 function downloadViaChrome(url, filename) {
   return new Promise((resolve) => {
     chrome.downloads.download(
@@ -47,8 +80,8 @@ function downloadViaChrome(url, filename) {
   });
 }
 
-async function handleDownload(msg) {
-  if (msg.site === "weibo") return handleWeiboDownload(msg);
+async function handleDownload(msg, sender) {
+  if (msg.site === "weibo") return handleWeiboDownload(msg, sender);
   const key = msg.type === "video" ? "video" : "image";
   const cfg = await chrome.storage.sync.get([key + "Custom", key + "Dir", key + "DirName"]);
   const ext = msg.type === "video" ? "mp4" : "jpg";
@@ -75,8 +108,8 @@ async function handleDownload(msg) {
   return downloadViaChrome(msg.url, dir + "/" + name);
 }
 
-async function handleZip(msg) {
-  if (msg.site === "weibo") return handleWeiboZip(msg);
+async function handleZip(msg, sender) {
+  if (msg.site === "weibo") return handleWeiboZip(msg, sender);
   const cfg = await chrome.storage.sync.get(["imageCustom", "imageDir"]);
   const zipName = "ins_images_" + timestamp() + ".zip";
   try {
@@ -178,16 +211,21 @@ if (chrome.runtime.onStartup) {
   });
 }
 
-async function handleWeiboDownload(msg) {
+async function handleWeiboDownload(msg, sender) {
   const { key, prefix } = weiboKeys(msg.type);
   const cfg = await chrome.storage.sync.get([prefix + "Custom", prefix + "Dir"]);
   const suffix = msg.nameSuffix || "";
   const base = "weibo_" + key + "_" + timestamp() + suffix;
+  const pid = msg.progressId || null;
+  bindProgress(pid, sender);
 
   // 兼容旧消息格式（只带 url）
   let candidates = Array.isArray(msg.candidates) ? msg.candidates.filter(Boolean) : [];
   if (!candidates.length && msg.url) candidates = [msg.url];
-  if (!candidates.length) return { ok: false, error: "no-candidates" };
+  if (!candidates.length) {
+    releaseProgress(pid);
+    return { ok: false, error: "no-candidates" };
+  }
 
   try {
     await ensureWeiboHeaders();
@@ -196,6 +234,8 @@ async function handleWeiboDownload(msg) {
     /* 由 offscreen 取回真实字节再交付，不把地址丢给 chrome.downloads 去拉：
      * 下载请求没有页面 Referer，微博 CDN 会回 200 的 HTML 错误页，
      * Chrome 据此把后缀改成 .htm（历史 bug）。字节先行则后缀不可能再被改。
+     * progressId 一并传下去：offscreen 边下边把已取字节数报回来，
+     * 内容脚本据此画进度环——否则视频那 5～15 秒完全是黑盒。
      */
     const saved = await chrome.runtime.sendMessage({
       target: "offscreen",
@@ -203,18 +243,25 @@ async function handleWeiboDownload(msg) {
       candidates,
       kind: key,
       fileName: base, // 不含扩展名；扩展名由 offscreen 按真实文件头决定
+      progressId: pid,
       dirKey: cfg[prefix + "Custom"] ? prefix + "DirHandle" : null
     });
     if (!saved || !saved.ok) return saved || { ok: false, error: "no-response" };
-    if (saved.saved === "fs") return { ok: true };
+    if (saved.saved === "fs") {
+      // 直接写盘，没有保存框：字节取完即完成
+      notifyProgress(pid, { phase: "save" });
+      return { ok: true };
+    }
 
     const fileName = base + "." + (saved.ext || (key === "video" ? "mp4" : "jpg"));
     const dir = (cfg[prefix + "Dir"] || WEIBO_DEFAULT_DIR[key]).replace(/^\/+|\/+$/g, "");
-    const resp = await deliverBytes(saved, dir + "/" + fileName);
+    const resp = await deliverBytes(saved, dir + "/" + fileName, pid);
     releaseBlobLater(saved.url);
     return resp;
   } catch (e) {
     return { ok: false, error: String(e && e.message ? e.message : e) };
+  } finally {
+    releaseProgress(pid);
   }
 }
 
@@ -224,8 +271,11 @@ const SMALL_MEDIA = 6 * 1024 * 1024;
 /* 把 offscreen 取回的字节交给下载器。
  * 小文件优先 dataUrl —— 这条路径与多图 zip 一致，是实测最稳的一条；
  * 大文件（视频）用 blob URL，避免 base64 膨胀；blob 不被接受时再退回 dataUrl。
+ * pid 存在时，在真正调下载器之前把进度环填满：这一刻保存框正要弹出。
+ * 之后一直等到下载结束（用户点保存 / 取消），响应才返回——
+ * 内容脚本据此把按钮恢复原样，所以「填满」与「保存框」是联动的。
  */
-async function deliverBytes(saved, target) {
+async function deliverBytes(saved, target, pid) {
   let dataUrl = null;
   const asDataUrl = async () => {
     if (dataUrl) return dataUrl;
@@ -238,29 +288,44 @@ async function deliverBytes(saved, target) {
     return dataUrl;
   };
 
+  const tryDownload = async (url) => {
+    notifyProgress(pid, { phase: "save" });
+    const r = await downloadViaChrome(url, target);
+    if (!r.ok) return r;
+    return watchDownload(r.downloadId);
+  };
+
+  // 用户点取消不是失败：归一成 ok，避免上层弹红条
+  const done = (r) => (r && r.canceled ? { ok: true, canceled: true } : r);
+
   if (!saved.size || saved.size <= SMALL_MEDIA) {
     const d = await asDataUrl();
     if (d) {
-      const r = await downloadViaChrome(d, target);
-      if (r.ok) return watchDownload(r.downloadId);
+      const r = await tryDownload(d);
+      if (r.ok || r.canceled) return done(r);
     }
   }
 
-  let r = await downloadViaChrome(saved.url, target);
-  if (r.ok) r = await watchDownload(r.downloadId);
-  if (r.ok) return r;
+  let r = await tryDownload(saved.url);
+  if (r.ok || r.canceled) return done(r);
   // 少数 Chrome 版本不接受离屏文档创建的 blob URL
   const d = await asDataUrl();
   if (!d) return r;
-  const retry = await downloadViaChrome(d, target);
-  return retry.ok ? watchDownload(retry.downloadId) : retry;
+  return done(await tryDownload(d));
 }
 
 /* 下载器接受 URL 后会「立刻」返回 downloadId，之后才可能因为资源无法解析
  * （例如离屏文档的 blob URL 不被接受）转到 interrupted —— 这种失败不会走回调，
- * 只看回调会误判成成功、按钮变绿而文件是坏的。这里短暂盯一下状态：
- * 中断就当失败返回，好让上层回退到 dataUrl；已在下载中则直接放行。
+ * 只看回调会误判成成功、按钮变绿而文件是坏的。
+ *
+ * 这里一直盯到下载真正结束：
+ *   complete    → 成功（用户已在保存框点了保存，字节落盘）
+ *   interrupted → 失败；原因是 USER_CANCELED 时标记 canceled（用户自己取消，不报错）
+ *   in_progress → 继续等（保存框打开期间就是这个状态，进度环保持填满）
+ *   超时        → 视为已开始，避免保存框长期开着把消息通道拖死
  */
+const WAIT_END_MS = 4 * 60 * 1000;
+
 function watchDownload(downloadId, ms) {
   return new Promise((resolve) => {
     const changes = chrome.downloads && chrome.downloads.onChanged;
@@ -280,13 +345,21 @@ function watchDownload(downloadId, ms) {
       clearTimeout(timer);
       resolve(r);
     };
+    const interrupted = (reason) =>
+      finish({
+        ok: false,
+        error: "download-interrupted",
+        reason: reason || "",
+        canceled: reason === "USER_CANCELED"
+      });
     const onChange = (delta) => {
       if (!delta || delta.id !== downloadId || !delta.state) return;
       const s = delta.state.current;
-      if (s === "interrupted") finish({ ok: false, error: "download-interrupted" });
-      else finish({ ok: true, downloadId, state: s });
+      if (s === "complete") finish({ ok: true, downloadId, state: s });
+      else if (s === "interrupted") interrupted(delta.error && delta.error.current);
+      // in_progress：保存框可能正开着，继续等
     };
-    const timer = setTimeout(() => finish({ ok: true, downloadId, state: "pending" }), ms || 4000);
+    const timer = setTimeout(() => finish({ ok: true, downloadId, state: "pending" }), ms || WAIT_END_MS);
     const listen = () => {
       try {
         changes.addListener(onChange);
@@ -301,9 +374,10 @@ function watchDownload(downloadId, ms) {
       try {
         chrome.downloads.search({ id: downloadId }, (items) => {
           if (settled) return;
-          const s = items && items[0] && items[0].state;
-          if (s === "interrupted") finish({ ok: false, error: "download-interrupted" });
-          else if (s === "complete" || s === "in_progress") finish({ ok: true, downloadId, state: s });
+          const it = items && items[0];
+          const s = it && it.state;
+          if (s === "complete") finish({ ok: true, downloadId, state: s });
+          else if (s === "interrupted") interrupted(it.error);
           else listen();
         });
         dispatched = true;
@@ -328,13 +402,15 @@ function releaseBlobLater(url) {
   }
 }
 
-async function handleWeiboZip(msg) {
+async function handleWeiboZip(msg, sender) {
   const items = Array.isArray(msg.items) ? msg.items : [];
   // 含视频的合集落到视频目录，纯图片落到图片目录（ins 侧沿用旧行为，不动）
   const hasVideo = items.some((it) => it.type === "video");
   const { key, prefix } = weiboKeys(hasVideo ? "video" : "image");
   const cfg = await chrome.storage.sync.get([prefix + "Custom", prefix + "Dir"]);
   const zipName = "weibo_" + key + "s_" + timestamp() + ".zip";
+  const pid = msg.progressId || null;
+  bindProgress(pid, sender);
 
   try {
     await ensureWeiboHeaders();
@@ -346,15 +422,21 @@ async function handleWeiboZip(msg) {
       zipName,
       prefix: "weibo_",
       sniffExt: true,
+      progressId: pid, // offscreen 每取完一项报一次，进度环按项数走
       dirKey: cfg[prefix + "Custom"] ? prefix + "DirHandle" : null
     });
     if (resp && resp.ok && resp.dataUrl) {
       const dir = (cfg[prefix + "Dir"] || WEIBO_DEFAULT_DIR[key]).replace(/^\/+|\/+$/g, "");
-      return downloadViaChrome(resp.dataUrl, dir + "/" + zipName);
+      notifyProgress(pid, { phase: "save" });
+      const r = await downloadViaChrome(resp.dataUrl, dir + "/" + zipName);
+      return r.ok ? watchDownload(r.downloadId) : r;
     }
+    if (resp && resp.ok) notifyProgress(pid, { phase: "save" });
     return resp || { ok: false, error: "no-response" };
   } catch (e) {
     return { ok: false, error: String(e && e.message ? e.message : e) };
+  } finally {
+    releaseProgress(pid);
   }
 }
 
@@ -387,12 +469,21 @@ async function handleWeiboApi(msg) {
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg) return;
+  // offscreen 边下边报的字节数：转给发起下载的那个标签页，画进度环用
+  if (msg.action === "wb-fetch-progress") {
+    notifyProgress(msg.progressId, {
+      phase: "fetch",
+      loaded: msg.loaded || 0,
+      total: msg.total || 0
+    });
+    return;
+  }
   if (msg.action === "download") {
-    handleDownload(msg).then(sendResponse);
+    handleDownload(msg, sender).then(sendResponse);
     return true;
   }
   if (msg.action === "zip") {
-    handleZip(msg).then(sendResponse);
+    handleZip(msg, sender).then(sendResponse);
     return true;
   }
   if (msg.action === "weibo-api") {

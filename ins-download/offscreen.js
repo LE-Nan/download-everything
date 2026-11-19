@@ -134,13 +134,98 @@ async function readPrefix(resp, max) {
   return out;
 }
 
-/* 逐个候选地址试探，返回第一个「真能拿到该类型媒体字节」的地址。
- * full=false 只读 4KB（探测用）；full=true 拿到完整 Blob（真正保存用）。
- * 无论哪种模式，HTML/JSON 错误页都会被 sniffMedia 判为「不是媒体」而跳过。
- * 大视频用 resp.blob() 而不是 arrayBuffer()：Chrome 会把大 Blob 落到磁盘，
- * 内存里只留引用，避免一个几百 MB 的视频把离屏文档撑爆。
+/* 边下边报进度：background 收到后转发给发起下载的标签页，内容脚本据此画进度环。
+ * 只带字节数，不带内容，开销可以忽略；没有 progressId 时（ins 侧）完全静默。
  */
-async function fetchFirstMedia(candidates, kind, full) {
+function reportProgress(pid, loaded, total) {
+  if (!pid) return;
+  try {
+    chrome.runtime.sendMessage(
+      { action: "wb-fetch-progress", progressId: pid, loaded: loaded || 0, total: total || 0 },
+      () => void chrome.runtime.lastError
+    );
+  } catch (e) {
+    /* 扩展上下文已失效，忽略 */
+  }
+}
+
+function joinHead(head, chunk) {
+  if (!head || !head.length) return chunk;
+  const out = new Uint8Array(head.length + chunk.length);
+  out.set(head, 0);
+  out.set(chunk, head.length);
+  return out;
+}
+
+/* 读取完整响应体，边读边回报进度。
+ * 先攒够 64 字节就嗅探文件头：不是媒体（HTML 错误页 / JSON）立刻断开，
+ * 不会为了一个 403 页面把几十 MB 的错误页拖下来。
+ */
+async function readAllWithProgress(resp, kind, onProgress) {
+  const ct = resp.headers.get("content-type") || "";
+  const total = Number(resp.headers.get("content-length")) || 0;
+
+  // 没有可读流（旧环境 / 测试桩）：退化成一次性读取，不报中间进度
+  if (!resp.body || !resp.body.getReader) {
+    const buf = new Uint8Array(await resp.arrayBuffer());
+    const sniff = sniffMedia(buf.subarray(0, Math.min(buf.length, RANGE_BYTES)), ct);
+    if (!sniff || sniff.kind !== kind) return { bad: true, ct };
+    if (onProgress) onProgress(buf.length, total || buf.length);
+    return { blob: new Blob([buf], { type: ct }), sniff, ct, size: buf.length };
+  }
+
+  const reader = resp.body.getReader();
+  const chunks = [];
+  let loaded = 0;
+  let head = new Uint8Array(0);
+  let sniff = null;
+  let lastAt = 0;
+
+  for (;;) {
+    const step = await reader.read();
+    if (step.done) break;
+    const chunk = step.value;
+    if (!chunk || !chunk.length) continue;
+    chunks.push(chunk);
+    loaded += chunk.length;
+
+    if (!sniff) {
+      head = joinHead(head, chunk);
+      if (head.length >= 64) {
+        sniff = sniffMedia(head.subarray(0, Math.min(head.length, RANGE_BYTES)), ct);
+        if (!sniff || sniff.kind !== kind) {
+          try {
+            await reader.cancel();
+          } catch (e) {
+            /* 已结束 */
+          }
+          return { bad: true, ct };
+        }
+      }
+    }
+
+    const now = Date.now();
+    if (onProgress && now - lastAt > 120) {
+      lastAt = now;
+      onProgress(loaded, total);
+    }
+  }
+
+  if (!sniff) {
+    sniff = sniffMedia(head.subarray(0, Math.min(head.length, RANGE_BYTES)), ct);
+    if (!sniff || sniff.kind !== kind) return { bad: true, ct };
+  }
+  if (onProgress) onProgress(loaded, total || loaded);
+
+  return { blob: new Blob(chunks, { type: ct }), sniff, ct, size: loaded };
+}
+
+/* 逐个候选地址试探，返回第一个「真能拿到该类型媒体字节」的地址。
+ * full=false 只读 4KB（探测用）；full=true 取完整内容（真正保存用）。
+ * 无论哪种模式，HTML/JSON 错误页都会被 sniffMedia 判为「不是媒体」而跳过。
+ * full 模式走流式读取：一边下一边把已取字节数报给上层画进度环。
+ */
+async function fetchFirstMedia(candidates, kind, full, onProgress) {
   const list = Array.isArray(candidates) ? candidates : [];
   const tried = [];
 
@@ -156,30 +241,31 @@ async function fetchFirstMedia(candidates, kind, full) {
         continue;
       }
       const ct = resp.headers.get("content-type") || "";
-      let blob = null;
-      let head;
+
       if (full) {
-        blob = await resp.blob();
-        head = new Uint8Array(
-          await blob.slice(0, Math.min(blob.size, RANGE_BYTES)).arrayBuffer()
-        );
-      } else {
-        head = await readPrefix(resp, RANGE_BYTES);
+        const got = await readAllWithProgress(resp, kind, onProgress);
+        if (got.bad) {
+          tried.push({ url, status: resp.status, type: got.ct || "unknown" });
+          continue;
+        }
+        return {
+          ok: true,
+          url,
+          blob: got.blob,
+          ext: got.sniff.ext,
+          mime: got.sniff.mime || got.ct,
+          size: got.size,
+          tried
+        };
       }
+
+      const head = await readPrefix(resp, RANGE_BYTES);
       const sniff = sniffMedia(head, ct);
       if (!sniff || sniff.kind !== kind) {
         tried.push({ url, status: resp.status, type: ct || "unknown" });
         continue;
       }
-      return {
-        ok: true,
-        url,
-        blob,
-        ext: sniff.ext,
-        mime: sniff.mime || ct,
-        size: blob ? blob.size : 0,
-        tried
-      };
+      return { ok: true, url, blob: null, ext: sniff.ext, mime: sniff.mime || ct, size: 0, tried };
     } catch (e) {
       tried.push({ url, error: String(e && e.message ? e.message : e) });
     }
@@ -200,7 +286,10 @@ const liveBlobs = new Map(); // blobUrl -> timer
 
 async function saveMedia(msg) {
   const kind = msg.kind === "video" ? "video" : "image";
-  const got = await fetchFirstMedia(msg.candidates, kind, true);
+  const pid = msg.progressId || null;
+  const got = await fetchFirstMedia(msg.candidates, kind, true, (loaded, total) =>
+    reportProgress(pid, loaded, total)
+  );
   if (!got.ok) return got;
 
   const mime = got.mime || (kind === "video" ? "video/mp4" : "image/jpeg");
@@ -312,7 +401,10 @@ async function handleZip(msg) {
   // 抓取全部媒体
   // prefix：zip 内文件名前缀。ins 侧不传，默认 "ins_"（保持原行为）；微博传 "weibo_"
   // sniffExt：微博侧传 true —— 逐个候选地址重试并按文件头定扩展名，跳过 HTML 错误页
+  // progressId：微博侧传，每取完一项回报一次（进度环按项数走）；ins 侧不传则完全静默
   const prefix = msg.prefix || "ins_";
+  const pid = msg.progressId || null;
+  const total = Array.isArray(msg.items) ? msg.items.length : 0;
   const files = [];
   for (let i = 0; i < msg.items.length; i++) {
     const item = msg.items[i];
@@ -336,8 +428,8 @@ async function handleZip(msg) {
         /* 换下一个候选 */
       }
     }
-    if (!got) continue;
-    files.push({ name: prefix + String(i + 1).padStart(2, "0") + "." + got.ext, data: got.buf });
+    if (got) files.push({ name: prefix + String(i + 1).padStart(2, "0") + "." + got.ext, data: got.buf });
+    if (pid) reportProgress(pid, i + 1, total);
   }
   if (!files.length) return { ok: false, error: "all-fetch-failed" };
 

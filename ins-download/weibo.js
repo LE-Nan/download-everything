@@ -598,6 +598,94 @@
     setTimeout(() => btn.classList.remove(cls), 1500);
   }
 
+  /* ---------- 下载进度环 ----------
+   * 视频动辄几 MB～几十 MB，从点击到弹出保存框要 5～15 秒。这段时间以前只有
+   * 一个半透明状态，看不出在动。现在按钮外圈画一个顺时针进度环：
+   *   已取回的字节 → 绿色填充；未取回 → 留空
+   * 数据来源是 offscreen 边下边报的字节数（经 background 转发到本脚本）；
+   * Content-Length 缺失时按时间缓慢爬升，最多爬到 92%，不会假装完成。
+   * 字节取完立即填满到 100%——那一刻保存框正要弹出；等用户点保存、
+   * 下载状态变成 complete，才收尾恢复原样。
+   */
+  const ring = { pid: null, btn: null, p: 0, ceiling: 12, known: false, timer: 0 };
+
+  function paintRing() {
+    if (ring.btn) ring.btn.style.setProperty("--wb-dl-p", ring.p.toFixed(1));
+  }
+
+  function stopRingTimer() {
+    if (ring.timer) {
+      clearInterval(ring.timer);
+      ring.timer = 0;
+    }
+  }
+
+  function newProgressId() {
+    return "wb" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+  }
+
+  function startRing(btn, pid) {
+    endRing(); // 结束上一个没收尾的进度，避免两个环打架
+    ring.pid = pid;
+    ring.btn = btn;
+    ring.p = 2;
+    ring.ceiling = 12; // 解析媒体阶段：慢慢爬到 12%
+    ring.known = false;
+    btn.classList.add("wb-dl-progress");
+    paintRing();
+    stopRingTimer();
+    ring.timer = setInterval(() => {
+      if (ring.known || !ring.btn) return;
+      if (ring.p >= ring.ceiling) return;
+      ring.p = Math.min(ring.ceiling, ring.p + Math.max(0.45, (ring.ceiling - ring.p) * 0.08));
+      paintRing();
+    }, 260);
+  }
+
+  // pid 省略时强制清空；传了 pid 则只在它仍是当前进度时收尾
+  function endRing(pid) {
+    if (pid && ring.pid && pid !== ring.pid) return;
+    stopRingTimer();
+    if (ring.btn) {
+      ring.btn.classList.remove("wb-dl-progress");
+      ring.btn.style.removeProperty("--wb-dl-p");
+    }
+    ring.pid = null;
+    ring.btn = null;
+    ring.p = 0;
+    ring.ceiling = 12;
+    ring.known = false;
+  }
+
+  function onRingProgress(msg) {
+    if (!ring.pid || msg.id !== ring.pid || !ring.btn) return;
+    if (msg.phase === "fetch") {
+      if (msg.total > 0) {
+        // 总量已知：按真实字节比例走，最多到 98，留 100 给「字节取完」这一刻
+        ring.known = true;
+        ring.p = Math.max(ring.p, Math.min(98, (msg.loaded / msg.total) * 100));
+        paintRing();
+      } else {
+        // 总量未知（分块传输）：退回时间爬升
+        ring.known = false;
+        ring.ceiling = Math.max(ring.ceiling, 92);
+      }
+      return;
+    }
+    if (msg.phase === "save") {
+      // 字节已取完，保存框正要弹出：填满
+      ring.known = true;
+      ring.ceiling = 100;
+      ring.p = 100;
+      paintRing();
+    }
+  }
+
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (!msg || msg.type !== "wb-dl-progress") return;
+    onRingProgress(msg);
+  });
+
   function showToast(text) {
     const t = document.createElement("div");
     t.className = "wb-dl-toast";
@@ -615,21 +703,33 @@
     return "未知错误";
   }
 
-  function downloadItem(btn, item, nameSuffix) {
+  function downloadItem(btn, item, nameSuffix, pid) {
     const candidates = (item.candidates || []).filter((u) => /^https?:/i.test(u));
     if (!candidates.length) {
+      endRing(pid);
       flash(btn, "wb-dl-error");
       showToast("未找到可下载的媒体地址");
       return;
     }
+    const id = pid || newProgressId();
+    if (!pid) startRing(btn, id);
     sendBg({
       action: "download",
       site: "weibo",
       type: item.type,
       candidates,
-      nameSuffix: nameSuffix || ""
+      nameSuffix: nameSuffix || "",
+      progressId: id
     }).then((resp) => {
-      if (!resp || !resp.ok) {
+      endRing(id);
+      if (!resp) {
+        // 后台可能被浏览器回收（消息通道断开），此时不要把环留在 100%
+        flash(btn, "wb-dl-error");
+        showToast("下载请求没有响应，请重试");
+        return;
+      }
+      if (!resp.ok) {
+        if (resp.canceled) return; // 用户自己点了取消，不算失败
         flash(btn, "wb-dl-error");
         showToast("下载失败：" + errorText(resp));
       } else {
@@ -682,12 +782,23 @@
       ev.preventDefault();
       ev.stopPropagation();
       closeMenu();
-      if (btn.classList.contains("wb-dl-loading")) return;
-      btn.classList.add("wb-dl-loading");
+      if (ring.pid) return; // 已有下载在进行
+      const pid = newProgressId();
       const items = list.map((it) => ({ candidates: it.candidates, type: it.type }));
-      sendBg({ action: "zip", site: "weibo", prefix: "weibo_", items }).then((resp) => {
-        btn.classList.remove("wb-dl-loading");
-        if (!resp || !resp.ok) {
+      startRing(btn, pid);
+      sendBg({
+        action: "zip",
+        site: "weibo",
+        prefix: "weibo_",
+        items,
+        progressId: pid
+      }).then((resp) => {
+        endRing(pid);
+        if (!resp) {
+          flash(btn, "wb-dl-error");
+          showToast("打包请求没有响应，请重试");
+        } else if (!resp.ok) {
+          if (resp.canceled) return;
           flash(btn, "wb-dl-error");
           showToast("打包下载失败：" + errorText(resp));
         } else {
@@ -711,29 +822,32 @@
     ev.preventDefault();
     ev.stopPropagation();
     const btn = ev.currentTarget;
-    if (btn.classList.contains("wb-dl-loading")) return;
+    if (ring.pid) return; // 这条按钮已有下载在进行
     if (openMenu) {
       closeMenu();
       return;
     }
 
-    btn.classList.add("wb-dl-loading");
+    // 解析媒体也要等接口，先把进度环点起来，让点击立刻有反馈
+    const pid = newProgressId();
+    startRing(btn, pid);
     mediaOf(root)
       .then((list) => {
-        btn.classList.remove("wb-dl-loading");
         if (!list || !list.length) {
+          endRing(pid);
           flash(btn, "wb-dl-error");
           showToast("未找到可下载的媒体（接口与页面解析均未取到）");
           return;
         }
         if (list.length === 1) {
-          downloadItem(btn, list[0], "");
+          downloadItem(btn, list[0], "", pid); // 沿用同一个进度 id
           return;
         }
+        endRing(pid); // 等用户选菜单，先收掉进度
         showMenu(btn, list);
       })
       .catch((e) => {
-        btn.classList.remove("wb-dl-loading");
+        endRing(pid);
         flash(btn, "wb-dl-error");
         showToast("解析失败：" + (e && e.message ? e.message : e));
       });
@@ -785,8 +899,78 @@
     return geo;
   }
 
+  // 微博顶部导航是 fixed 的，卡片会滑到它下面。按钮是 fixed + 最高 z-index，
+  // 不处理就会「浮」在导航栏上（实测反馈的 bug）。这里用 elementFromPoint 在视口顶端
+  // 取几个点，向上找 fixed/sticky 的祖先，拿它的底边当作「被遮挡分界线」。
+  // 每 400ms 重新探测一次：导航栏高度会随滚动收缩，不必每帧算。
+  const occl = { value: 0, at: 0 };
+
+  function occludedTop() {
+    const now = Date.now();
+    if (now - occl.at < 400) return occl.value;
+    occl.at = now;
+
+    let bottom = 0;
+    const probes = [
+      [0.5, 8],
+      [0.1, 8],
+      [0.5, 36],
+      [0.9, 8]
+    ];
+    for (const [fx, py] of probes) {
+      let el = null;
+      try {
+        el = document.elementFromPoint(Math.round(window.innerWidth * fx), py);
+      } catch (e) {
+        continue;
+      }
+      if (!el) continue;
+      if (el.classList && el.classList.contains("wb-dl-btn")) continue; // 探到自己的按钮，换下一个点
+      let guard = 0;
+      while (el && guard++ < 12) {
+        const cs = getComputedStyle(el);
+        if ((cs.position === "fixed" || cs.position === "sticky") && el.getBoundingClientRect().top <= 2) {
+          const r = el.getBoundingClientRect();
+          // 只认「横跨大半个视口的条状元素」，避免把侧边浮层当成顶部栏
+          if (r.height > 20 && r.height < 240 && r.width > window.innerWidth * 0.5) {
+            bottom = Math.max(bottom, r.bottom);
+          }
+          break;
+        }
+        el = el.parentElement;
+      }
+    }
+
+    // 命中测试失败时按已知选择器兜底（微博导航容器）
+    if (!bottom) {
+      for (const sel of ["#woo-header", "[class*='woo-header']", "header"]) {
+        const el = document.querySelector(sel);
+        if (!el) continue;
+        const cs = getComputedStyle(el);
+        if (cs.position !== "fixed" && cs.position !== "sticky") continue;
+        const r = el.getBoundingClientRect();
+        if (r.top <= 2 && r.bottom > 0 && r.height < 240) bottom = Math.max(bottom, r.bottom);
+      }
+    }
+    occl.value = bottom;
+    return bottom;
+  }
+
+  // 兜底遮挡判定：在头像中心点做一次命中测试，落在卡片之外的元素说明被浮层盖住了
+  function coveredByOverlay(root, ar) {
+    try {
+      const el = document.elementFromPoint(ar.left + ar.width / 2, ar.top + ar.height / 2);
+      if (!el) return false;
+      if (el === root || root.contains(el)) return false;
+      if (el.classList && el.classList.contains("wb-dl-btn")) return false;
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
   // 按钮挂在卡片右侧外部，与 ins 的交互模型一致；
-  // 纵向与卡片头像居中对齐；头像被滑出视口时按钮一并隐藏（不再吸附在卡片顶部）
+  // 纵向与卡片头像居中对齐；头像被滑出视口或被顶部栏盖住时按钮一并隐藏
   function positionEntry(e) {
     if (!e.root.isConnected) {
       e.btn.remove();
@@ -806,9 +990,9 @@
     }
     const ar = e.avatar ? e.avatar.getBoundingClientRect() : null;
 
-    // 可见性判定以头像为准：头像滑过视口顶部（或还在视口下方）时隐藏
+    // 可见性判定以头像为准：头像滑出视口（上或下）时隐藏
     const visible = ar
-      ? ar.bottom > 8 && ar.top < window.innerHeight
+      ? ar.bottom > 0 && ar.top < window.innerHeight
       : r.bottom > 0 && r.top < window.innerHeight;
     if (!visible) {
       e.btn.style.display = "none";
@@ -817,6 +1001,19 @@
 
     const size = 34;
     const top = ar ? ar.top + (ar.height - size) / 2 : r.top + 12;
+
+    // 顶部栏已经盖住卡片：按钮同样隐藏，不能浮在导航栏上面
+    const guard = occludedTop();
+    if (top < guard) {
+      e.btn.style.display = "none";
+      return;
+    }
+    // 找不到固定的顶部栏时，靠近视口顶端再做一次命中测试兜底
+    if (guard === 0 && ar && top < 140 && coveredByOverlay(e.root, ar)) {
+      e.btn.style.display = "none";
+      return;
+    }
+
     const left = Math.min(r.right + 8, window.innerWidth - size - 10);
     e.btn.style.display = "";
     e.btn.style.top = Math.round(top) + "px";
@@ -947,6 +1144,8 @@
       return { isFeedImage, variants, candidates: imageCandidates(url) };
     },
     scan,
+    // 进度环当前状态（排查「点了没反应 / 环不涨」时看这个）
+    ring: () => ({ pid: ring.pid, percent: Math.round(ring.p), known: ring.known }),
     clearCache: () => {
       statusCache.clear();
       componentCache.clear();

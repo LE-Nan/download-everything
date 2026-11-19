@@ -19,6 +19,8 @@
   margin: 0;
   pointer-events: auto;
   transition: background 0.15s ease, transform 0.15s ease;
+  /* 进度百分比，由 weibo.js 写入 */
+  --wb-dl-p: 0;
 }
 .wb-dl-btn:hover {
   background: #eb7350;
@@ -35,9 +37,35 @@
 .wb-dl-btn.wb-dl-error {
   background: #e74c3c;
 }
-.wb-dl-btn.wb-dl-loading {
-  opacity: 0.6;
-  cursor: wait;
+
+/* 下载进度：按钮外圈按百分比顺时针填充，已加载部分绿色、未加载留空。
+ * 用 conic-gradient + 环形遮罩实现，不改按钮自身的背景色，
+ * 这样图标始终清晰可读，进度环又能一眼看出走到哪。 */
+.wb-dl-btn::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: conic-gradient(#2ecc71 calc(var(--wb-dl-p, 0) * 1%), transparent 0);
+  -webkit-mask: radial-gradient(
+    farthest-side,
+    transparent calc(100% - 3.5px),
+    #000 calc(100% - 3.5px)
+  );
+  mask: radial-gradient(farthest-side, transparent calc(100% - 3.5px), #000 calc(100% - 3.5px));
+  opacity: 0;
+  transition: opacity 0.16s ease;
+  pointer-events: none;
+}
+.wb-dl-btn.wb-dl-progress::after {
+  opacity: 1;
+}
+.wb-dl-btn.wb-dl-progress {
+  background: rgba(0, 0, 0, 0.72);
+  cursor: progress;
+}
+.wb-dl-btn.wb-dl-progress svg {
+  opacity: 0.9;
 }
 
 /* 多图选择菜单 */
