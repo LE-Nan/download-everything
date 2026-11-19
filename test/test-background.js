@@ -17,6 +17,7 @@ let saveResult = null;
 const sandbox = {
   console,
   setTimeout,
+  clearTimeout,
   Date,
   URL,
   chrome: {
@@ -220,6 +221,47 @@ const baseName = (filename) => filename.split("/").pop();
   check("重试用了 dataUrl", String(downloads[1].url).indexOf("data:") === 0, true);
   check("重试仍落到视频目录", dirOf(downloads[1].filename), "weibo-download/videos");
   sandbox.chrome.downloads.download = origDownload;
+
+  console.log("== 4c. blob 下载被异步中断时同样回退 dataUrl ==");
+  downloads.length = 0;
+  offscreenMsgs.length = 0;
+  saveResult = {
+    ok: true,
+    saved: "blob",
+    url: "blob:chrome-extension://test-extension-id/ddd",
+    ext: "mp4",
+    size: 50 * 1024 * 1024
+  };
+  let listener = null;
+  sandbox.chrome.downloads.onChanged = {
+    addListener: (fn) => {
+      listener = fn;
+    },
+    removeListener: () => {
+      listener = null;
+    }
+  };
+  const dlSync = sandbox.chrome.downloads.download;
+  sandbox.chrome.downloads.download = (opts, cb) => {
+    downloads.push(opts);
+    const id = downloads.length;
+    cb(id);
+    const isBlob = String(opts.url).indexOf("blob:") === 0;
+    setTimeout(() => {
+      if (listener) listener({ id, state: { current: isBlob ? "interrupted" : "complete" } });
+    }, 0);
+  };
+  r = await send({
+    action: "download",
+    site: "weibo",
+    type: "video",
+    candidates: ["https://f.video.weibocdn.com/o0/y.mp4"]
+  });
+  check("先试了 blob", String(downloads[0].url).indexOf("blob:") === 0, true);
+  check("中断后自动换 dataUrl", String(downloads[1].url).indexOf("data:") === 0, true);
+  check("最终返回成功", r.ok, true);
+  delete sandbox.chrome.downloads.onChanged;
+  sandbox.chrome.downloads.download = dlSync;
 
   console.log("== 5. 微博视频：取字节后落到视频目录 ==");
   saveResult = null;

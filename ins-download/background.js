@@ -242,15 +242,78 @@ async function deliverBytes(saved, target) {
     const d = await asDataUrl();
     if (d) {
       const r = await downloadViaChrome(d, target);
-      if (r.ok) return r;
+      if (r.ok) return watchDownload(r.downloadId);
     }
   }
 
   let r = await downloadViaChrome(saved.url, target);
+  if (r.ok) r = await watchDownload(r.downloadId);
   if (r.ok) return r;
   // 少数 Chrome 版本不接受离屏文档创建的 blob URL
   const d = await asDataUrl();
-  return d ? downloadViaChrome(d, target) : r;
+  if (!d) return r;
+  const retry = await downloadViaChrome(d, target);
+  return retry.ok ? watchDownload(retry.downloadId) : retry;
+}
+
+/* 下载器接受 URL 后会「立刻」返回 downloadId，之后才可能因为资源无法解析
+ * （例如离屏文档的 blob URL 不被接受）转到 interrupted —— 这种失败不会走回调，
+ * 只看回调会误判成成功、按钮变绿而文件是坏的。这里短暂盯一下状态：
+ * 中断就当失败返回，好让上层回退到 dataUrl；已在下载中则直接放行。
+ */
+function watchDownload(downloadId, ms) {
+  return new Promise((resolve) => {
+    const changes = chrome.downloads && chrome.downloads.onChanged;
+    if (downloadId === undefined || !changes) {
+      resolve({ ok: true, downloadId });
+      return;
+    }
+    let settled = false;
+    const finish = (r) => {
+      if (settled) return;
+      settled = true;
+      try {
+        changes.removeListener(onChange);
+      } catch (e) {
+        /* 忽略 */
+      }
+      clearTimeout(timer);
+      resolve(r);
+    };
+    const onChange = (delta) => {
+      if (!delta || delta.id !== downloadId || !delta.state) return;
+      const s = delta.state.current;
+      if (s === "interrupted") finish({ ok: false, error: "download-interrupted" });
+      else finish({ ok: true, downloadId, state: s });
+    };
+    const timer = setTimeout(() => finish({ ok: true, downloadId, state: "pending" }), ms || 4000);
+    const listen = () => {
+      try {
+        changes.addListener(onChange);
+      } catch (e) {
+        finish({ ok: true, downloadId });
+      }
+    };
+
+    // 小文件可能在挂监听之前就下完了，先查一次当前状态再决定
+    if (chrome.downloads.search) {
+      let dispatched = false;
+      try {
+        chrome.downloads.search({ id: downloadId }, (items) => {
+          if (settled) return;
+          const s = items && items[0] && items[0].state;
+          if (s === "interrupted") finish({ ok: false, error: "download-interrupted" });
+          else if (s === "complete" || s === "in_progress") finish({ ok: true, downloadId, state: s });
+          else listen();
+        });
+        dispatched = true;
+      } catch (e) {
+        dispatched = false; // 查询不可用，落到监听
+      }
+      if (dispatched) return;
+    }
+    listen();
+  });
 }
 
 function releaseBlobLater(url) {

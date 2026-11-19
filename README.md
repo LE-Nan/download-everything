@@ -298,7 +298,7 @@ ins-download/                 ← 加载扩展时选这个文件夹
 ```bash
 node test/test-weibo.js       # 卡片识别 / 帖子 id 取值 / 接口解析 / 地址候选，34 项断言
 node test/test-offscreen.js   # 文件头识别 / 候选重试 / 拒绝 HTML / 取字节交付 / zip，40 项断言
-node test/test-background.js  # 路由隔离 / 字节交付 / dataUrl 回退 / 接口代理 / 请求头规则，46 项断言
+node test/test-background.js  # 路由隔离 / 字节交付 / 中断回退 / 接口代理 / 请求头规则，49 项断言
 ```
 
 三套都是纯 Node、无依赖、直接跑。`test-background.js` 会分别模拟不带 `site` 的下载（Instagram 路径）和 `site: "weibo"` 的下载，断言目录、前缀、`saveAs` 互不影响——改 background 后跑一遍即可确认没有波及 Instagram；`test-offscreen.js` 专门守住「HTML 错误页被当成图片存成 .htm」这个老 bug——它断言下载器拿到的是 `blob:` URL 而不是网络地址，因为一旦让浏览器自己去拉，后缀就会被 CDN 的响应内容改掉。
@@ -314,7 +314,8 @@ node test/test-background.js  # 路由隔离 / 字节交付 / dataUrl 回退 / �
 - 候选地址补全：所选清晰度 → 原图 → 2000 → 1080 → 690 → 360 → **页面原本给的地址**（保底一定存在）
 - **按钮与卡片头像垂直居中对齐**；头像滑出视口时按钮同步隐藏，不再吸附在屏幕边缘
 - 大视频用 `resp.blob()` 而非 `arrayBuffer()`，交给 Chrome 落盘，避免撑爆离屏文档内存
-- 测试 120 项断言（34 / 40 / 46）
+- 下载启动后短暂盯一下状态：blob URL 被浏览器**异步**中断（不走回调报错）时同样自动回退 `dataUrl`，不会出现「按钮变绿但文件是坏的」
+- 测试 123 项断言（34 / 40 / 49）
 
 ### v1.2.0
 
