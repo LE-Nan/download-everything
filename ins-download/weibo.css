@@ -30,6 +30,9 @@
   width: 18px;
   height: 18px;
   pointer-events: none;
+  /* 提到进度层之上，图标始终清晰 */
+  position: relative;
+  z-index: 2;
 }
 .wb-dl-btn.wb-dl-done {
   background: #2ecc71;
@@ -38,9 +41,24 @@
   background: #e74c3c;
 }
 
-/* 下载进度：按钮外圈按百分比顺时针填充，已加载部分绿色、未加载留空。
- * 用 conic-gradient + 环形遮罩实现，不改按钮自身的背景色，
- * 这样图标始终清晰可读，进度环又能一眼看出走到哪。 */
+/* 下载进度：按钮背景按百分比顺时针填充，已加载部分绿色、未加载留空。
+ * 两层叠加：
+ *   ::before  扇形底色（柔和绿），让"背景"整体跟着进度走
+ *   ::after   外圈实色圆环，精确标出当前百分比
+ * 图标用 z-index 提到两层之上，始终清晰可读。 */
+.wb-dl-btn::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: conic-gradient(
+    rgba(46, 204, 113, 0.42) calc(var(--wb-dl-p, 0) * 1%),
+    transparent 0
+  );
+  opacity: 0;
+  transition: opacity 0.16s ease;
+  pointer-events: none;
+}
 .wb-dl-btn::after {
   content: "";
   position: absolute;
@@ -57,15 +75,13 @@
   transition: opacity 0.16s ease;
   pointer-events: none;
 }
+.wb-dl-btn.wb-dl-progress::before,
 .wb-dl-btn.wb-dl-progress::after {
   opacity: 1;
 }
 .wb-dl-btn.wb-dl-progress {
   background: rgba(0, 0, 0, 0.72);
   cursor: progress;
-}
-.wb-dl-btn.wb-dl-progress svg {
-  opacity: 0.9;
 }
 
 /* 多图选择菜单 */
