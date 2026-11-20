@@ -19,6 +19,13 @@
   const entries = []; // { btn, article }
   let rafPending = false;
 
+  // 界面文案走 i18n.js（manifest 里排在 content.js 之前）
+  const I18N = globalThis.DELi18n || null;
+  const langReady = I18N ? I18N.ready : Promise.resolve("zh");
+  function t(key, vars) {
+    return I18N ? I18N.t(key, vars) : key;
+  }
+
   // P 值 -> 目标宽度（近似映射，用于从 srcset 中挑选最接近的档）
   const QUALITY_WIDTH = {
     "240": 320,
@@ -30,16 +37,19 @@
   };
 
   function loadState() {
-    chrome.storage.sync.get(
-      ["enabled", "imageQuality", "videoQuality"],
-      (res) => {
-        enabled = res.enabled !== false;
-        settings.imageQuality = res.imageQuality || settings.imageQuality;
-        settings.videoQuality = res.videoQuality || settings.videoQuality;
-        if (enabled) scan();
-        else removeAllButtons();
-      }
-    );
+    // 等语言读出来再建按钮，避免英文界面先闪一下中文 title
+    langReady.then(() => {
+      chrome.storage.sync.get(
+        ["enabled", "imageQuality", "videoQuality"],
+        (res) => {
+          enabled = res.enabled !== false;
+          settings.imageQuality = res.imageQuality || settings.imageQuality;
+          settings.videoQuality = res.videoQuality || settings.videoQuality;
+          if (enabled) scan();
+          else removeAllButtons();
+        }
+      );
+    });
   }
 
   chrome.storage.onChanged.addListener((changes, area) => {
@@ -53,6 +63,19 @@
       if (changes[k]) settings[k] = changes[k].newValue;
     }
   });
+
+  /* 语言切换后就地刷新已注入按钮的提示文字：不再重新扫描，也不用刷新页面。
+   * 正在下载的那条保持「点击取消」，只换语言不换语义。 */
+  function refreshButtonTitles() {
+    for (const e of entries) {
+      if (!e || e.dead || !e.btn) continue;
+      const busy = ring.pid && ring.btn === e.btn;
+      e.btn.title = busy ? titleBusy() : titleIdle();
+      if (busy) e.btn.setAttribute("aria-label", t("btn.aria.cancel"));
+      else e.btn.removeAttribute("aria-label");
+    }
+  }
+  if (I18N) I18N.onChange(refreshButtonTitles);
 
   function removeAllButtons() {
     while (entries.length) {
@@ -138,13 +161,14 @@
   }
 
   // ---------- 按钮 ----------
-  const TITLE_IDLE = "下载（download-everything）";
-  const TITLE_BUSY = "下载中，点击取消";
+  // 文案按当前显示语言取，语言切换后由 refreshButtonTitles() 就地刷新
+  const titleIdle = () => t("btn.title.ins");
+  const titleBusy = () => t("btn.title.busy");
 
   function makeButton() {
     const btn = document.createElement("button");
     btn.className = "ins-dl-btn";
-    btn.title = TITLE_IDLE;
+    btn.title = titleIdle();
     // 两个图标叠着放，靠 .ins-dl-progress 切换：下载中显示「停止」方块，
     // 让「再点一次 = 取消」这件事在视觉上说得通（否则用户以为点了没反应）
     btn.innerHTML =
@@ -214,8 +238,8 @@
     ring.known = false;
     btn.classList.add("ins-dl-progress");
     // 提示文案同步换成「点击取消」：按钮此刻是可控的，不再是纯展示
-    btn.title = TITLE_BUSY;
-    btn.setAttribute("aria-label", "取消下载");
+    btn.title = titleBusy();
+    btn.setAttribute("aria-label", t("btn.aria.cancel"));
     paintRing();
     stopRingTimer();
     ring.timer = setInterval(() => {
@@ -233,7 +257,7 @@
     if (ring.btn) {
       ring.btn.classList.remove("ins-dl-progress");
       ring.btn.style.removeProperty("--ins-dl-p");
-      ring.btn.title = TITLE_IDLE;
+      ring.btn.title = titleIdle();
       ring.btn.removeAttribute("aria-label");
     }
     ring.pid = null;
@@ -284,7 +308,7 @@
     markCanceled(pid);
     endRing();
     flash(btn, "ins-dl-canceled");
-    showToast("已取消下载", "info");
+    showToast(t("toast.canceled"), "info");
     chrome.runtime.sendMessage({ action: "cancel", progressId: pid }, () =>
       void chrome.runtime.lastError
     );
@@ -292,21 +316,21 @@
 
   // kind 为空是错误提示（红）；"info" 是中性提示（深灰蓝），如「已取消」
   function showToast(text, kind) {
-    const t = document.createElement("div");
-    t.className = "ins-dl-toast" + (kind === "info" ? " ins-dl-toast-info" : "");
-    t.textContent = text;
-    document.body.appendChild(t);
-    setTimeout(() => t.remove(), kind === "info" ? 2200 : 5000);
+    const node = document.createElement("div");
+    node.className = "ins-dl-toast" + (kind === "info" ? " ins-dl-toast-info" : "");
+    node.textContent = text;
+    document.body.appendChild(node);
+    setTimeout(() => node.remove(), kind === "info" ? 2200 : 5000);
   }
 
   function errorText(resp) {
     if (chrome.runtime.lastError) return chrome.runtime.lastError.message;
-    if (resp && resp.error === "permission") return "文件夹授权已失效，请到插件设置页重新授权";
-    if (resp && resp.error === "media-blocked") return "Instagram 拒绝了该地址，换一条试试";
-    if (resp && resp.error === "all-fetch-failed") return "全部媒体都下载失败";
-    if (resp && resp.error === "aborted") return "已取消";
+    if (resp && resp.error === "permission") return t("err.permission");
+    if (resp && resp.error === "media-blocked") return t("err.blockedIns");
+    if (resp && resp.error === "all-fetch-failed") return t("err.allFailed");
+    if (resp && resp.error === "aborted") return t("err.aborted");
     if (resp && resp.error) return String(resp.error);
-    return "未知错误";
+    return t("err.unknown");
   }
 
   // ---- 通过帖子数据接口取全部媒体真实地址（解决轮播懒加载/视频 blob 流问题）----
@@ -477,7 +501,7 @@
     if (!url || !url.startsWith("http")) {
       endRing(id);
       flash(btn, "ins-dl-error");
-      showToast("未找到可下载的媒体地址");
+      showToast(t("toast.noMedia"));
       return false;
     }
     // 解析阶段就被取消的，不要把下载再发出去
@@ -497,10 +521,10 @@
         endRing(id);
         if (chrome.runtime.lastError || !resp) {
           flash(btn, "ins-dl-error");
-          showToast("下载请求没有响应，请重试");
+          showToast(t("toast.noResponse"));
         } else if (!resp.ok) {
           flash(btn, "ins-dl-error");
-          showToast("下载失败：" + errorText(resp));
+          showToast(t("toast.dlFailed", { msg: errorText(resp) }));
         } else {
           flash(btn, "ins-dl-done");
         }
@@ -537,7 +561,7 @@
 
     const itemSingle = document.createElement("button");
     itemSingle.className = "ins-dl-menu-item";
-    itemSingle.textContent = "下载单张（当前显示）";
+    itemSingle.textContent = t("menu.single");
     itemSingle.addEventListener("click", (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
@@ -547,7 +571,7 @@
 
     const itemAll = document.createElement("button");
     itemAll.className = "ins-dl-menu-item";
-    itemAll.textContent = "下载多张（全部 " + list.length + " 项，打包 zip）";
+    itemAll.textContent = t("menu.allZip", { n: list.length });
     itemAll.addEventListener("click", (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
@@ -567,10 +591,10 @@
         endRing(pid);
         if (chrome.runtime.lastError || !resp) {
           flash(btn, "ins-dl-error");
-          showToast("打包请求没有响应，请重试");
+          showToast(t("toast.zipNoResponse"));
         } else if (!resp.ok) {
           flash(btn, "ins-dl-error");
-          showToast("打包下载失败：" + errorText(resp));
+          showToast(t("toast.zipFailed", { msg: errorText(resp) }));
         } else {
           flash(btn, "ins-dl-done");
         }
@@ -599,7 +623,7 @@
       // 加载中再点一次 = 取消。但只允许取消「自己这条按钮」发起的下载，
       // 别的卡片正在下载时点它会容易被误解成"我取消了别人"，给个提示就好
       if (ring.btn === btn) cancelActive(btn);
-      else showToast("正在下载另一条动态，请稍候", "info");
+      else showToast(t("toast.busyOtherIns"), "info");
       return;
     }
 
@@ -625,7 +649,7 @@
     if (!list.length) {
       endRing(pid);
       flash(btn, "ins-dl-error");
-      showToast("未找到可下载的媒体地址（接口与页面解析均未取到）");
+      showToast(t("toast.noMediaDeep"));
       return;
     }
     if (list.length === 1) {
@@ -779,5 +803,5 @@
 
   loadState();
   observer.observe(document.documentElement, { childList: true, subtree: true });
-  scan();
+  langReady.then(scan);
 })();

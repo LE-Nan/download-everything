@@ -48,6 +48,13 @@
   const LOG = "[weibo download]";
   const PROCESSED_ATTR = "data-wbdl-processed";
 
+  // 界面文案走 i18n.js（manifest 里排在 weibo.js 之前）
+  const I18N = globalThis.DELi18n || null;
+  const langReady = I18N ? I18N.ready : Promise.resolve("zh");
+  function t(key, vars) {
+    return I18N ? I18N.t(key, vars) : key;
+  }
+
   let enabled = true;
   // 微博专有配置，与 ins 的 imageQuality / videoQuality 互不干扰。
   // 图片默认取原图：接口返回的本来就是最大档，orj1080 并非每张图都有
@@ -95,16 +102,19 @@
 
   // ---------- 配置 ----------
   function loadState() {
-    chrome.storage.sync.get(
-      ["weiboEnabled", "weiboImageQuality", "weiboVideoQuality"],
-      (res) => {
-        enabled = res.weiboEnabled !== false;
-        settings.imageQuality = res.weiboImageQuality || settings.imageQuality;
-        settings.videoQuality = res.weiboVideoQuality || settings.videoQuality;
-        if (enabled) scan();
-        else removeAllButtons();
-      }
-    );
+    // 等语言读出来再建按钮，避免英文界面先闪一下中文 title
+    langReady.then(() => {
+      chrome.storage.sync.get(
+        ["weiboEnabled", "weiboImageQuality", "weiboVideoQuality"],
+        (res) => {
+          enabled = res.weiboEnabled !== false;
+          settings.imageQuality = res.weiboImageQuality || settings.imageQuality;
+          settings.videoQuality = res.weiboVideoQuality || settings.videoQuality;
+          if (enabled) scan();
+          else removeAllButtons();
+        }
+      );
+    });
   }
 
   chrome.storage.onChanged.addListener((changes, area) => {
@@ -121,6 +131,19 @@
       settings.videoQuality = changes.weiboVideoQuality.newValue;
     }
   });
+
+  /* 语言切换后就地刷新已注入按钮的提示文字：不再重新扫描，也不用刷新页面。
+   * 正在下载的那条保持「点击取消」，只换语言不换语义。 */
+  function refreshButtonTitles() {
+    for (const e of entries) {
+      if (!e || e.dead || !e.btn) continue;
+      const busy = ring.pid && ring.btn === e.btn;
+      e.btn.title = busy ? titleBusy() : titleIdle();
+      if (busy) e.btn.setAttribute("aria-label", t("btn.aria.cancel"));
+      else e.btn.removeAttribute("aria-label");
+    }
+  }
+  if (I18N) I18N.onChange(refreshButtonTitles);
 
   function removeAllButtons() {
     while (entries.length) {
@@ -586,13 +609,14 @@
   }
 
   // ---------- 按钮 ----------
-  const TITLE_IDLE = "下载（微博图片/视频）";
-  const TITLE_BUSY = "下载中，点击取消";
+  // 文案按当前显示语言取，语言切换后由 refreshButtonTitles() 就地刷新
+  const titleIdle = () => t("btn.title.weibo");
+  const titleBusy = () => t("btn.title.busy");
 
   function makeButton() {
     const btn = document.createElement("button");
     btn.className = "wb-dl-btn";
-    btn.title = TITLE_IDLE;
+    btn.title = titleIdle();
     // 两个图标叠着放，靠 .wb-dl-progress 切换：下载中显示「停止」方块，
     // 让「再点一次 = 取消」这件事在视觉上说得通（否则用户以为点了没反应）
     btn.innerHTML =
@@ -663,8 +687,8 @@
     ring.known = false;
     btn.classList.add("wb-dl-progress");
     // 提示文案同步换成「点击取消」：按钮此刻是可控的，不再是纯展示
-    btn.title = TITLE_BUSY;
-    btn.setAttribute("aria-label", "取消下载");
+    btn.title = titleBusy();
+    btn.setAttribute("aria-label", t("btn.aria.cancel"));
     paintRing();
     stopRingTimer();
     ring.timer = setInterval(() => {
@@ -682,7 +706,7 @@
     if (ring.btn) {
       ring.btn.classList.remove("wb-dl-progress");
       ring.btn.style.removeProperty("--wb-dl-p");
-      ring.btn.title = TITLE_IDLE;
+      ring.btn.title = titleIdle();
       ring.btn.removeAttribute("aria-label");
     }
     ring.pid = null;
@@ -732,12 +756,12 @@
 
   function errorText(resp) {
     if (chrome.runtime.lastError) return chrome.runtime.lastError.message;
-    if (resp && resp.error === "permission") return "文件夹授权已失效，请到插件设置页重新授权";
-    if (resp && resp.error === "media-blocked") return "微博拒绝了该地址（403）或已失效，换一张试试";
-    if (resp && resp.error === "all-fetch-failed") return "全部媒体都下载失败";
-    if (resp && resp.error === "aborted") return "已取消";
+    if (resp && resp.error === "permission") return t("err.permission");
+    if (resp && resp.error === "media-blocked") return t("err.blockedWeibo");
+    if (resp && resp.error === "all-fetch-failed") return t("err.allFailed");
+    if (resp && resp.error === "aborted") return t("err.aborted");
     if (resp && resp.error) return String(resp.error);
-    return "未知错误";
+    return t("err.unknown");
   }
 
   /* 加载中再次点击 = 取消。分三层收尾：
@@ -751,7 +775,7 @@
     markCanceled(pid);
     endRing();
     flash(btn, "wb-dl-canceled");
-    showToast("已取消下载", "info");
+    showToast(t("toast.canceled"), "info");
     sendBg({ action: "wb-cancel", progressId: pid });
   }
 
@@ -760,7 +784,7 @@
     if (!candidates.length) {
       endRing(pid);
       flash(btn, "wb-dl-error");
-      showToast("未找到可下载的媒体地址");
+      showToast(t("toast.noMedia"));
       return;
     }
     const id = pid || newProgressId();
@@ -787,12 +811,12 @@
       if (!resp) {
         // 后台可能被浏览器回收（消息通道断开），此时不要把环留在 100%
         flash(btn, "wb-dl-error");
-        showToast("下载请求没有响应，请重试");
+        showToast(t("toast.noResponse"));
         return;
       }
       if (!resp.ok) {
         flash(btn, "wb-dl-error");
-        showToast("下载失败：" + errorText(resp));
+        showToast(t("toast.dlFailed", { msg: errorText(resp) }));
       } else {
         flash(btn, "wb-dl-done");
       }
@@ -828,7 +852,7 @@
 
     const single = document.createElement("button");
     single.className = "wb-dl-menu-item";
-    single.textContent = "只下载第 1 项";
+    single.textContent = t("menu.firstOnly");
     single.addEventListener("click", (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
@@ -838,7 +862,7 @@
 
     const all = document.createElement("button");
     all.className = "wb-dl-menu-item";
-    all.textContent = "全部下载（" + list.length + " 项，打包 zip）";
+    all.textContent = t("menu.allZipWeibo", { n: list.length });
     all.addEventListener("click", (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
@@ -862,10 +886,10 @@
         endRing(pid);
         if (!resp) {
           flash(btn, "wb-dl-error");
-          showToast("打包请求没有响应，请重试");
+          showToast(t("toast.zipNoResponse"));
         } else if (!resp.ok) {
           flash(btn, "wb-dl-error");
-          showToast("打包下载失败：" + errorText(resp));
+          showToast(t("toast.zipFailed", { msg: errorText(resp) }));
         } else {
           flash(btn, "wb-dl-done");
         }
@@ -895,7 +919,7 @@
       // 加载中再点一次 = 取消。但只允许取消「自己这条按钮」发起的下载，
       // 别的卡片正在下载时点它会容易被误解成"我取消了别人"，给个提示就好
       if (ring.btn === btn) cancelActive(btn);
-      else showToast("正在下载另一条微博，请稍候", "info");
+      else showToast(t("toast.busyOtherWeibo"), "info");
       return;
     }
 
@@ -909,7 +933,7 @@
         if (!list || !list.length) {
           endRing(pid);
           flash(btn, "wb-dl-error");
-          showToast("未找到可下载的媒体（接口与页面解析均未取到）");
+          showToast(t("toast.noMediaDeep"));
           return;
         }
         if (list.length === 1) {
@@ -923,7 +947,7 @@
         if (isCanceled(pid)) return;
         endRing(pid);
         flash(btn, "wb-dl-error");
-        showToast("解析失败：" + (e && e.message ? e.message : e));
+        showToast(t("toast.parseFailed", { msg: e && e.message ? e.message : e }));
       });
   }
 
@@ -1254,5 +1278,5 @@
 
   loadState();
   observer.observe(document.documentElement, { childList: true, subtree: true });
-  scan();
+  langReady.then(scan);
 })();

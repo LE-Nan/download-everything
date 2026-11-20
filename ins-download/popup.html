@@ -23,20 +23,21 @@
 <h1>download-everything</h1>
 <!-- 行内只写站点名（不再写「下载」），左侧文字点击跳站点，右侧开关仍只负责「是否在站点注入下载按钮」 -->
 <div class="row">
-  <a class="site-link" href="https://www.instagram.com" target="_blank" rel="noopener noreferrer" title="打开 Instagram">Instagram</a>
+  <a class="site-link" href="https://www.instagram.com" target="_blank" rel="noopener noreferrer" title="打开 Instagram" data-i18n-title="popup.openIg">Instagram</a>
   <label class="switch">
     <input type="checkbox" id="enabled">
     <span class="slider"></span>
   </label>
 </div>
 <div class="row">
-  <a class="site-link" href="https://weibo.com" target="_blank" rel="noopener noreferrer" title="打开微博">微博</a>
+  <a class="site-link" href="https://weibo.com" target="_blank" rel="noopener noreferrer" title="打开微博" data-i18n-title="popup.openWeibo" data-i18n="site.weibo">微博</a>
   <label class="switch">
     <input type="checkbox" id="weiboEnabled">
     <span class="slider"></span>
   </label>
 </div>
-<button id="openOptions">打开设置</button>
+<button id="openOptions" data-i18n="popup.openOptions">打开设置</button>
+<script src="i18n.js"></script>
 <script src="popup.js"></script>
 </body>
 </html>

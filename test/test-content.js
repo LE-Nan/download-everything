@@ -9,6 +9,8 @@ const path = require("path");
 const vm = require("vm");
 
 const src = fs.readFileSync(path.join(__dirname, "..", "ins-download", "content.js"), "utf8");
+// 界面文案由 i18n.js 提供（manifest 里排在内容脚本之前），沙箱里也要先加载
+const i18nSrc = fs.readFileSync(path.join(__dirname, "..", "ins-download", "i18n.js"), "utf8");
 
 // ---- 最小环境桩：class / style / title 要能记账，否则测不出状态切换 ----
 function stubEl(tag) {
@@ -104,6 +106,7 @@ const sandbox = {
 sandbox.window.__insDl = undefined;
 
 vm.createContext(sandbox);
+vm.runInContext(i18nSrc, sandbox, { filename: "i18n.js" });
 vm.runInContext(src, sandbox, { filename: "content.js" });
 
 const tick = () => new Promise((r) => setTimeout(r, 0));

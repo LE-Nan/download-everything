@@ -9,11 +9,11 @@
 **中文** ｜ [English](README.en.md) ｜ [日本語](README.ja.md) ｜ [한국어](README.ko.md)
 
 在动态卡片旁注入一个下载按钮，点一下就把原图、原视频静默存到你自己指定的文件夹——不弹另存为、不跳转、不打断浏览。
-两个站点都带**真实字节进度环**，加载中还能再点一次**取消**。
+两个站点都带**真实字节进度环**，加载中还能再点一次**取消**。设置页与弹窗支持**中 / 英 / 日 / 韩**四种界面语言。
 
 ![Manifest](https://img.shields.io/badge/Manifest-V3-405DE6?style=flat-square)
 ![Chrome](https://img.shields.io/badge/Chrome-109%2B-4285F4?style=flat-square&logo=googlechrome&logoColor=white)
-![Version](https://img.shields.io/badge/version-2.1.0-2ECC71?style=flat-square)
+![Version](https://img.shields.io/badge/version-2.2.0-2ECC71?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey?style=flat-square)
 
 </div>
@@ -155,9 +155,16 @@ Instagram 网页端没有下载按钮。右键"图片另存为"只能拿到被�
 
 取消是静默的：不闪红、不重试、不会再弹第二个保存框，底部给一条中性提示"已取消下载"。另外只有**发起这条下载的按钮**能取消它，点别的卡片的按钮只会提示"正在下载另一条内容，请稍候"，避免误以为取消了别人的任务。
 
-### 设置保存位置
+### 设置页：保存位置 / 显示设置
 
-点击工具栏图标 → **打开设置**。设置页按站点分成两块——**Instagram 下载设置** 与 **微博下载设置** 各一张卡片，标题在卡片框外，标题里的站点名可点击跳转；每张卡片内部再分图片、视频两组，四组设置互不影响。
+点击工具栏图标 → **打开设置**。设置页是左右分栏（左侧导航、右侧内容），版式与 Chrome 自身的设置页一致：
+
+| 分栏 | 内容 |
+| --- | --- |
+| **保存位置** | 两个站点的下载目录与清晰度 |
+| **显示设置** | 界面语言（中文 / English / 日本語 / 한국어） |
+
+「保存位置」里按站点分成两块——**Instagram 下载设置** 与 **微博下载设置** 各一张卡片，标题在卡片框外，标题里的站点名可点击跳转；每张卡片内部再分图片、视频两组，四组设置互不影响。当前分栏记在地址栏 hash 里，`options.html#display` 可直达显示设置。
 
 | 设置项 | 可选值 | 说明 |
 | --- | --- | --- |
@@ -171,6 +178,15 @@ Instagram 网页端没有下载按钮。右键"图片另存为"只能拿到被�
 **关于自定义文件夹**：点击"选择文件夹"弹出的系统窗口里挑任意目录，之后所有下载静默写入，不会再有任何确认框。目录句柄存在 IndexedDB 里。
 
 > ⚠️ **浏览器重启后授权会失效**（File System Access API 的固有安全限制），设置页会提示"需要重新授权"，点一下 **重新授权** 重新选一次同一目录即可，已下载文件不受影响。
+
+### 界面语言
+
+**显示设置 → 界面语言** 可切换中文 / English / 日本語 / 한국어。四语覆盖设置页、工具栏弹窗与网页内按钮的提示文字（按钮 title、多图菜单、失败原因）。
+
+- 切换**立即生效**：设置页与弹窗当页更新，网页里已注入的按钮也会就地换文案，不必刷新
+- 没手动选过时按浏览器语言猜一次（`zh*` → 中文，`ja` → 日语，`ko` → 韩语，其余英文），只影响显示，不写存储
+- 选择存在 `chrome.storage.sync` 的 `uiLang` 键，升级/同步后保留
+- 字典在 `i18n.js`，四种语言的键集由 `test-i18n.js` 守着，少一个键测试就会红
 
 ### 降级行为
 
@@ -190,7 +206,8 @@ ins-download/                 ← 加载扩展时选这个文件夹
 ├── offscreen.js              取字节（可中断）、写盘、打包
 ├── zip.js                    zip 打包（store 模式，零依赖）
 ├── idb.js                    IndexedDB 助手（存目录句柄）
-├── options.html / options.js 设置页（Instagram / 微博 各一组）
+├── i18n.js                   界面语言字典（中 / 英 / 日 / 韩）与切换逻辑
+├── options.html / options.js 设置页（左侧分栏：保存位置 / 显示设置）
 ├── popup.html / popup.js     工具栏弹窗（两个独立开关）
 ├── icons/                    16 / 48 / 128 图标
 └── (仓库根) test/            回归测试，node 直跑，无依赖
@@ -412,16 +429,29 @@ node test/test-weibo.js       # 卡片识别 / 帖子 id 取值 / 接口解析 /
 node test/test-content.js     # Instagram 进度环 / 取消状态机 / 按钮形态切换，30 项断言
 node test/test-offscreen.js   # 文件头识别 / 候选重试 / 拒绝 HTML / 流式进度 / 中断 / zip，66 项断言
 node test/test-background.js  # 路由隔离 / 字节交付 / 进度回传 / 取消三段式 / 请求头规则，91 项断言
+node test/test-i18n.js        # 四语字典键集 / 占位符 / 切换与通知，43 项断言
 ```
 
-四套都是纯 Node、无依赖、直接跑，合计 242 项断言：
+五套都是纯 Node、无依赖、直接跑，合计 285 项断言：
 
 - `test-background.js` 会分别模拟不带 `site` 的下载（Instagram 路径）和 `site: "weibo"` 的下载，断言目录、前缀、`saveAs` 互不影响——改 background 后跑一遍即可确认没有波及 Instagram；
 - `test-content.js` 只桩按钮与消息这一层，专测 Instagram 的环：解析阶段封顶 12%、按字节比例走并封顶 98、取消后迟到的进度不许再画环；
 - `test-offscreen.js` 专门守住「HTML 错误页被当成图片存成 .htm」这个老 bug：断言下载器拿到的是 `blob:` / `data:` 而不是网络地址，以及中断后不再尝试后续候选；
-- `test-weibo.js` 里的 DOM 桩只实现识别与解析用到的那部分，用最小环境跑真实代码。
+- `test-weibo.js` 里的 DOM 桩只实现识别与解析用到的那部分，用最小环境跑真实代码；
+- `test-i18n.js` 断言四种语言的键集完全一致、占位符 `{n}` / `{msg}` / `{name}` / `{path}` 一个不少——少翻一条就会在界面上露出 key 原文或悄悄回落中文。
 
 ## 更新日志
+
+### v2.2.0
+
+设置页改成 Chrome 设置那样的左右分栏，并给整个界面加了四语切换：
+
+- **设置页分栏**：左侧导航（保存位置 / 显示设置，圆角胶囊选中态），右侧内容区。原来的两个站点设置整块搬进「保存位置」，字段、`id`、存储键一个没动
+- **显示设置 → 界面语言**：中文 / English / 日本語 / 한국어 四选一，立即生效。四语覆盖设置页、工具栏弹窗，以及网页内按钮的 tooltip、多图菜单、失败提示
+- 新增 `i18n.js`：一份字典 + `t()` / `ready` / `applyDom` / `onChange`，内容脚本按 `manifest` 顺序先加载它；语言切换时已注入的按钮就地换文案，不用刷新页面
+- 没选过语言时按浏览器语言猜一次并只读不写；选择存 `chrome.storage.sync.uiLang`
+- 扩展版本 2.1.0 → **2.2.0**，`manifest.description` 补一句界面语言
+- 新增 `test/test-i18n.js`（43 项），回归测试 242 → **285 项**
 
 ### v2.1.0
 

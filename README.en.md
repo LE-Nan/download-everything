@@ -9,11 +9,11 @@
 [中文](README.md) ｜ **English** ｜ [日本語](README.ja.md) ｜ [한국어](README.ko.md)
 
 A round download button is injected next to every feed card. One click saves the original image or video silently into the folder you chose — no "Save as" dialog, no redirects, no interruption.
-Both sites show a **real-byte progress ring**, and clicking again while loading **cancels** the download.
+Both sites show a **real-byte progress ring**, and clicking again while loading **cancels** the download. The settings page and popup are available in **Chinese / English / Japanese / Korean**.
 
 ![Manifest](https://img.shields.io/badge/Manifest-V3-405DE6?style=flat-square)
 ![Chrome](https://img.shields.io/badge/Chrome-109%2B-4285F4?style=flat-square&logo=googlechrome&logoColor=white)
-![Version](https://img.shields.io/badge/version-2.1.0-2ECC71?style=flat-square)
+![Version](https://img.shields.io/badge/version-2.2.0-2ECC71?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey?style=flat-square)
 
 </div>
@@ -153,9 +153,16 @@ Cancelling stops three layers, not just the UI:
 
 Cancelling is silent: no red flash, no retry, no second save dialog, just a neutral "Cancelled" toast. Only **the button that started the download** can cancel it — clicking another card's button only shows "Downloading another item, please wait", so nobody thinks they cancelled someone else's job.
 
-### Choosing where files go
+### Settings page: Save location / Display
 
-Click the toolbar icon → **Open settings**. The page is split per site — **Instagram download settings** and **Weibo download settings**, one card each, with the site title outside the card frame and clickable inside the parentheses. Each card contains an image group and a video group; the four groups are independent.
+Click the toolbar icon → **Open settings**. The page is a two-column layout (navigation on the left, content on the right) modelled on Chrome's own settings:
+
+| Section | Contents |
+| --- | --- |
+| **Save location** | Download folders and quality for both sites |
+| **Display** | Interface language (Chinese / English / Japanese / Korean) |
+
+"Save location" is split per site — **Instagram download settings** and **Weibo download settings**, one card each, with the site title outside the card frame and clickable inside the parentheses. Each card contains an image group and a video group; the four groups are independent. The active section lives in the URL hash, so `options.html#display` opens Display directly.
 
 | Setting | Values | Default |
 | --- | --- | --- |
@@ -169,6 +176,15 @@ Click the toolbar icon → **Open settings**. The page is split per site — **I
 **About custom folders**: the system picker lets you choose any directory; afterwards every download is written silently, with no confirmation dialog. The directory handle is kept in IndexedDB.
 
 > ⚠️ **Authorization expires after a browser restart** (an inherent limit of the File System Access API). The settings page then shows "needs re-authorization" — click **Re-authorize** and pick the same folder again. Already downloaded files are unaffected.
+
+### Interface language
+
+**Display → Interface language** switches between Chinese / English / Japanese / Korean. All four cover the settings page, the toolbar popup, and the tooltips, menus and error toasts of the on-page button.
+
+- The switch applies **immediately**: this page and the popup update in place, and buttons already injected into a page swap their tooltips without a reload
+- If you never picked one, it is guessed once from the browser language (`zh*` → Chinese, `ja` → Japanese, `ko` → Korean, otherwise English) — display only, nothing is written
+- The choice lives in the `chrome.storage.sync` key `uiLang` and survives updates and sync
+- The dictionary is `i18n.js`; `test-i18n.js` keeps all four languages at the same key set, so a missing translation turns the suite red
 
 ### Degraded behaviour
 
@@ -188,7 +204,8 @@ ins-download/                 ← select this folder when loading the extension
 ├── offscreen.js              byte fetching (abortable), disk writes, zipping
 ├── zip.js                    zip writer (store mode, zero dependencies)
 ├── idb.js                    IndexedDB helper (directory handles)
-├── options.html / options.js settings page (one group per site)
+├── i18n.js                   UI strings (zh / en / ja / ko) and language switching
+├── options.html / options.js settings page (left rail: Save location / Display)
 ├── popup.html / popup.js     toolbar popup (two independent switches)
 ├── icons/                    16 / 48 / 128 icons
 └── (repo root) test/         regression tests, plain node, no dependencies
@@ -342,16 +359,29 @@ node test/test-weibo.js       # card detection / post id / API parsing / candida
 node test/test-content.js     # Instagram progress ring / cancel state machine / button states — 30 assertions
 node test/test-offscreen.js   # header sniffing / candidate retries / HTML rejection / streaming progress / abort / zip — 66 assertions
 node test/test-background.js  # routing isolation / byte delivery / progress relay / three-stage cancel / header rule — 91 assertions
+node test/test-i18n.js        # four-language key sets / placeholders / switching and notify — 43 assertions
 ```
 
-Four plain-Node suites, 242 assertions in total:
+Five plain-Node suites, 285 assertions in total:
 
 - `test-background.js` simulates both a download without `site` (Instagram path) and `site: "weibo"`, asserting folders, prefixes and `saveAs` never cross over — run it after touching background to confirm Instagram is unaffected;
 - `test-content.js` stubs only the button and messaging layer and focuses on the Instagram ring: 12% cap while resolving, byte-ratio up to 98, and late progress must not repaint a cancelled ring;
 - `test-offscreen.js` guards the old "HTML error page saved as .htm" bug: it asserts the downloader receives `blob:` / `data:` rather than a network URL, and that an abort stops further candidates;
-- `test-weibo.js` keeps a minimal DOM stub implementing only what detection and parsing touch, running the real code.
+- `test-weibo.js` keeps a minimal DOM stub implementing only what detection and parsing touch, running the real code;
+- `test-i18n.js` asserts all four languages carry exactly the same keys and keep the `{n}` / `{msg}` / `{name}` / `{path}` placeholders — one missing translation would leak a raw key or silently fall back to Chinese.
 
 ## Changelog
+
+### v2.2.0
+
+The settings page now uses Chrome-settings-style two-column navigation, and the whole UI speaks four languages:
+
+- **Split settings page**: left rail (Save location / Display, rounded pill for the active item) with content on the right. The two site blocks moved into "Save location" untouched — same fields, same `id`s, same storage keys
+- **Display → Interface language**: Chinese / English / Japanese / Korean, applied instantly. Covers the settings page, the popup, and the on-page button tooltip, multi-item menu and error toasts
+- New `i18n.js`: one dictionary plus `t()` / `ready` / `applyDom` / `onChange`; content scripts load it first per the manifest order, and already-injected buttons re-label in place when the language changes
+- With no explicit choice the language is guessed from the browser once, read-only; the choice is stored under `chrome.storage.sync.uiLang`
+- Extension version 2.1.0 → **2.2.0**, `manifest.description` mentions the languages
+- New `test/test-i18n.js` (43 assertions); regression tests 242 → **285**
 
 ### v2.1.0
 

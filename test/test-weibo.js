@@ -6,6 +6,8 @@ const path = require("path");
 const vm = require("vm");
 
 const src = fs.readFileSync(path.join(__dirname, "..", "ins-download", "weibo.js"), "utf8");
+// 界面文案由 i18n.js 提供（manifest 里排在内容脚本之前），沙箱里也要先加载
+const i18nSrc = fs.readFileSync(path.join(__dirname, "..", "ins-download", "i18n.js"), "utf8");
 
 // ---- 最小环境桩 ----
 // 按钮相关的状态全靠 class / style / title 承载，所以这一层要能记账，
@@ -99,6 +101,7 @@ sandbox.window.innerHeight = 900;
 sandbox.window.addEventListener = () => {};
 
 vm.createContext(sandbox);
+vm.runInContext(i18nSrc, sandbox, { filename: "i18n.js" });
 vm.runInContext(src, sandbox, { filename: "weibo.js" });
 
 const wb = sandbox.window.__wbDl;
