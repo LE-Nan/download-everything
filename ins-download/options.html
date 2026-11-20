@@ -2,12 +2,19 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<title>ins download - 设置</title>
+<title>Instagram下载设置</title>
 <style>
   body { font-family: "Segoe UI", "Microsoft YaHei", sans-serif; max-width: 560px; margin: 32px auto; padding: 0 16px; color: #222; }
-  h1 { font-size: 20px; }
+  /* 站点区块标题：Instagram / 微博两块共用同一套样式，都放在卡片框外、层级一致 */
+  h1 { font-size: 20px; font-weight: 700; line-height: 1.3; margin: 0 0 10px; }
+  h2 { font-size: 20px; font-weight: 700; line-height: 1.3; margin: 28px 0 10px; }
   section { border: 1px solid #ddd; border-radius: 8px; padding: 16px 20px; margin-bottom: 16px; }
-  h2 { font-size: 15px; margin-top: 0; }
+  /* 卡片内的小标题（图片下载 / 视频下载） */
+  h3 { font-size: 14px; margin: 14px 0 2px; color: #333; }
+  h3:first-of-type { margin-top: 0; }
+  /* 站点链接：默认与标题文字同色，悬浮才出现蓝色下划线，明确「可跳转」 */
+  .site-link { color: inherit; text-decoration: none; cursor: pointer; }
+  .site-link:hover { color: #405de6; text-decoration: underline; }
   label { display: block; margin: 10px 0 4px; font-size: 13px; }
   select { width: 100%; padding: 6px 8px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px; }
   .dir-row { display: flex; align-items: center; gap: 8px; }
@@ -21,10 +28,11 @@
 </style>
 </head>
 <body>
-<h1>ins download 设置</h1>
+<h1>Instagram下载设置（<a class="site-link" href="https://www.instagram.com" target="_blank" rel="noopener noreferrer">instagram</a>）</h1>
 
+<!-- Instagram 的图片与视频设置合并进同一张卡片；站点标题在卡片框外，与下方微博一致 -->
 <section>
-  <h2>图片下载</h2>
+  <h3>图片下载</h3>
   <label>图片保存位置</label>
   <div class="dir-row">
     <div class="dir-display" id="imageDirDisplay">默认（下载\ins-download\images）</div>
@@ -42,10 +50,8 @@
     <option value="2k">2K</option>
     <option value="4k">4K</option>
   </select>
-</section>
 
-<section>
-  <h2>视频下载</h2>
+  <h3>视频下载</h3>
   <label>视频保存位置</label>
   <div class="dir-row">
     <div class="dir-display" id="videoDirDisplay">默认（下载\ins-download\videos）</div>
@@ -66,9 +72,10 @@
   <div class="hint">视频以 Instagram 实际提供的流为准，会优先匹配所选清晰度</div>
 </section>
 
+<h2>微博下载设置（<a class="site-link" href="https://weibo.com" target="_blank" rel="noopener noreferrer">weibo</a>）</h2>
+<div class="hint" style="margin: 0 0 10px">以下设置只作用于微博，与上面的 Instagram 设置互不影响</div>
 <section>
-  <h2>微博下载（weibo.com）</h2>
-  <div class="hint" style="margin-top:0">以下设置只作用于微博，与上面的 Instagram 设置互不影响</div>
+  <h3>图片下载</h3>
   <label>图片保存位置</label>
   <div class="dir-row">
     <div class="dir-display" id="weiboImageDirDisplay">默认（下载\weibo-download\images）</div>
@@ -85,6 +92,7 @@
   </select>
   <div class="hint">微博并非每张图都有 1080 / 690 档，取不到的档位会自动回退到原图</div>
 
+  <h3>视频下载</h3>
   <label>视频保存位置</label>
   <div class="dir-row">
     <div class="dir-display" id="weiboVideoDirDisplay">默认（下载\weibo-download\videos）</div>

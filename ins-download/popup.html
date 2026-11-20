@@ -14,19 +14,23 @@
   input:checked + .slider:before { transform: translateX(18px); }
   button { width: 100%; padding: 7px 0; border: 1px solid #ddd; background: #fff; border-radius: 4px; cursor: pointer; }
   button:hover { background: #f5f5f5; }
+  /* 站点链接：默认与普通文本一致，悬浮时才呈现"可跳转"的链接样式（变蓝 + 下划线） */
+  .site-link { color: #222; text-decoration: none; cursor: pointer; }
+  .site-link:hover { color: #405de6; text-decoration: underline; }
 </style>
 </head>
 <body>
-<h1>ins download</h1>
+<h1>download-everything</h1>
+<!-- 行内只写站点名（不再写「下载」），左侧文字点击跳站点，右侧开关仍只负责「是否在站点注入下载按钮」 -->
 <div class="row">
-  <span>启用下载按钮</span>
+  <a class="site-link" href="https://www.instagram.com" target="_blank" rel="noopener noreferrer" title="打开 Instagram">Instagram</a>
   <label class="switch">
     <input type="checkbox" id="enabled">
     <span class="slider"></span>
   </label>
 </div>
 <div class="row">
-  <span>微博下载按钮</span>
+  <a class="site-link" href="https://weibo.com" target="_blank" rel="noopener noreferrer" title="打开微博">微博</a>
   <label class="switch">
     <input type="checkbox" id="weiboEnabled">
     <span class="slider"></span>

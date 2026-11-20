@@ -6,12 +6,14 @@
 
 **Instagram + 微博 网页端图片 / 视频一键下载 Chrome 扩展**
 
+**中文** ｜ [English](README.en.md) ｜ [日本語](README.ja.md) ｜ [한국어](README.ko.md)
+
 在动态卡片旁注入一个下载按钮，点一下就把原图、原视频静默存到你自己指定的文件夹——不弹另存为、不跳转、不打断浏览。
-加载中还能再点一次**取消**。
+两个站点都带**真实字节进度环**，加载中还能再点一次**取消**。
 
 ![Manifest](https://img.shields.io/badge/Manifest-V3-405DE6?style=flat-square)
 ![Chrome](https://img.shields.io/badge/Chrome-109%2B-4285F4?style=flat-square&logo=googlechrome&logoColor=white)
-![Version](https://img.shields.io/badge/version-2.0.0-2ECC71?style=flat-square)
+![Version](https://img.shields.io/badge/version-2.1.0-2ECC71?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey?style=flat-square)
 
 </div>
@@ -22,7 +24,7 @@
 
 | 站点 | 图片 | 视频 | 多图打包 | 进度环 | 取消下载 | 独立目录 / 清晰度 |
 | --- | --- | --- | --- | --- | --- | --- |
-| **Instagram** `instagram.com` | ✅ 含全部轮播项 | ✅ Reels 与视频帖 | ✅ | — | — | ✅ |
+| **Instagram** `instagram.com` | ✅ 含全部轮播项 | ✅ Reels 与视频帖 | ✅ | ✅ | ✅ | ✅ |
 | **微博** `weibo.com` | ✅ 九宫格全部 | ✅ 高清 / 标清 | ✅ | ✅ | ✅ | ✅ |
 
 两个站点的功能实现**完全独立**：独立的 DOM 适配层、独立的取址链路、独立的按钮样式、独立的存储键。任何一个站点的改版或出错都不会影响另一个。
@@ -59,6 +61,9 @@ Instagram 网页端没有下载按钮。右键"图片另存为"只能拿到被�
 - **轮播全量**：接口一次返回全部轮播项，不受懒加载影响
 - **清晰度**：图片按 `image_versions2.candidates` / srcset 挑选最接近所选宽度的档（240P～4K）；视频按 `video_versions` 匹配
 - **多图菜单**：`下载单张（当前显示）` / `下载多张（全部 N 项，打包 zip）`
+- **字节先行**：由离屏文档取回真实字节再交付，扩展名按真实文件头决定，后缀不会被 CDN 的错误页改掉
+- **下载进度环**：按钮外圈按真实字节顺时针填充（解析阶段按时间缓升，取字节阶段按比例走），与保存框联动
+- **取消下载**：加载中再点一次按钮即取消，断掉取字节请求、关掉已弹出的保存框，静默收尾
 - **命名**：`ins_image_20261119T201500.jpg` / `ins_video_…mp4`，多张打包时 zip 内按序号命名
 
 ### 微博 已实现
@@ -78,7 +83,7 @@ Instagram 网页端没有下载按钮。右键"图片另存为"只能拿到被�
 
 ### 诊断能力
 
-两个站点都内置了控制台诊断命令（`__wbDl.*` / `[ins download]` 日志），站点改版后不用读源码就能定位是"没识别到卡片"还是"取址失败"。清单见下面的[调试](#调试)一节。
+两个站点都内置了控制台诊断命令（`__wbDl.*` / `[download-everything]` 日志），站点改版后不用读源码就能定位是"没识别到卡片"还是"取址失败"。清单见下面的[调试](#调试)一节。
 
 ## 安装
 
@@ -107,6 +112,7 @@ Instagram 网页端没有下载按钮。右键"图片另存为"只能拿到被�
 - 多图轮播动态 → 弹出两个选项：
   - **下载单张（当前显示）** — 只下轮播里当前滑到的那一张
   - **下载多张（全部 N 项，打包 zip）** — 全部打包成一个 zip
+- 点击后按钮外圈开始走**进度环**；加载中**再点一次 = 取消**（图标此时是实心方块，悬停转红）
 
 ### 微博
 
@@ -119,9 +125,9 @@ Instagram 网页端没有下载按钮。右键"图片另存为"只能拿到被�
 
 按钮横向会自动收进视口内，不会飘到右侧栏上。若某条微博没出现按钮，按 F12 在控制台执行 `__wbDl.debug()` 可以看到它为什么没被识别（详见[调试](#调试)）。
 
-### 下载进度环（微博）
+### 下载进度环
 
-视频从点击到弹出保存框通常要 5～15 秒，这段时间以前只有一个半透明状态，看不出在动。现在按钮**外圈就是进度条**：
+视频从点击到弹出保存框通常要 5～15 秒，这段时间以前只有一个半透明状态，看不出在动。现在按钮**外圈就是进度条**（Instagram 与微博同一套）：
 
 ```
 点击 ──▶ 解析媒体（0→12%，按时间缓升）
@@ -135,7 +141,7 @@ Instagram 网页端没有下载按钮。右键"图片另存为"只能拿到被�
 - 保存框开着期间进度环保持填满；点保存（下载状态 `complete`）后才收尾
 - 点「取消」同样恢复原样，不会报错、也不会再弹一次保存框
 
-### 取消下载（微博）
+### 取消下载
 
 **加载中再点一次按钮 = 取消**。按钮此刻会变成实心方块图标、悬停转红、提示文字改为"下载中，点击取消"，就是为了让"再点一次"这件事说得通。
 
@@ -147,11 +153,11 @@ Instagram 网页端没有下载按钮。右键"图片另存为"只能拿到被�
 | 取字节 / 打包（那 5～15 秒） | `AbortController` 断掉 `fetch`，读流循环主动退出，不再白下几十 MB |
 | 保存框已弹出 | `chrome.downloads.cancel()` 关掉那次下载 |
 
-取消是静默的：不闪红、不重试、不会再弹第二个保存框，底部给一条中性提示"已取消下载"。另外只有**发起这条下载的按钮**能取消它，点别的卡片的按钮只会提示"正在下载另一条微博，请稍候"，避免误以为取消了别人的任务。
+取消是静默的：不闪红、不重试、不会再弹第二个保存框，底部给一条中性提示"已取消下载"。另外只有**发起这条下载的按钮**能取消它，点别的卡片的按钮只会提示"正在下载另一条内容，请稍候"，避免误以为取消了别人的任务。
 
 ### 设置保存位置
 
-点击工具栏图标 → **打开设置**。设置页分四块：Instagram 图片、Instagram 视频、微博图片、微博视频，全部互不影响。
+点击工具栏图标 → **打开设置**。设置页按站点分成两块——**Instagram 下载设置** 与 **微博下载设置** 各一张卡片，标题在卡片框外，标题里的站点名可点击跳转；每张卡片内部再分图片、视频两组，四组设置互不影响。
 
 | 设置项 | 可选值 | 说明 |
 | --- | --- | --- |
@@ -175,8 +181,8 @@ Instagram 网页端没有下载按钮。右键"图片另存为"只能拿到被�
 ```
 ins-download/                 ← 加载扩展时选这个文件夹
 ├── manifest.json             MV3 清单
-├── content.js                Instagram：注入按钮、解析媒体、弹菜单（核心）
-├── content.css               Instagram 按钮 / 菜单 / 错误提示条样式
+├── content.js                Instagram：注入按钮、解析媒体、进度环 / 取消、弹菜单（核心）
+├── content.css               Instagram 按钮 / 菜单 / 进度环 / 错误提示条样式
 ├── weibo.js                  微博：同上，但选择器与取址链路完全独立
 ├── weibo.css                 微博按钮 / 菜单 / 进度环样式（.wb-dl-* 前缀，互不覆盖）
 ├── background.js             service worker：按 site 路由下载调度、进度转发、取消、Referer 规则
@@ -301,7 +307,7 @@ blob 的 `type` 和文件名都是本地决定的，服务器连改后缀的机�
 ### 进度环与取消的数据链路
 
 ```
-weibo.js 生成 progressId
+content.js / weibo.js 生成 progressId
    │
    ├─▶ background 用 sender.tab.id 记进 progressTabs
    │
@@ -310,11 +316,13 @@ weibo.js 生成 progressId
    │
    ├─▶ 调 chrome.downloads 之前先发 phase:"save"（=100%），此刻保存框弹出
    │
-   └─▶ 用户再点一次 ─▶ wb-cancel ─▶ offscreen abort（AbortController）
-                                  └▶ chrome.downloads.cancel(downloadId)
+   └─▶ 用户再点一次 ─▶ action:"cancel" ─▶ offscreen abort（AbortController）
+                                        └▶ chrome.downloads.cancel(downloadId)
 ```
 
 一个 `progressId` 贯穿全程，取消请求即使**早于**下载请求到达也会被记账（连点两下的场景），任务开始时先查一次，已取消就直接返回。三个环节的取消结果统一归一成 `canceled`，所以上层永远只有"成功 / 取消 / 失败"三种语义。
+
+> 两个站点共用同一条进度通道（消息 type 沿用历史的 `wb-dl-progress`），各自只画自己按钮上的环；`progressId` 前缀不同（`ig…` / `wb…`），旧脚本里的 `wb-cancel` 与新的 `cancel` 都已支持。
 
 ### 按钮为什么挂在 body 上
 
@@ -340,10 +348,15 @@ background 里唯一的交汇点是每个 handler 开头的 `if (msg.site === "w
 
 ## 调试
 
-打开页面 DevTools → Console，**把上下文切到本扩展**（下拉框里选 `ins download`），按站点执行：
+打开页面 DevTools → Console，**把上下文切到本扩展**（下拉框里选 `download-everything`），按站点执行：
 
 | 站点 | 命令 | 作用 |
 | --- | --- | --- |
+| Instagram | `__insDl.debug()` | 打印每条被识别的动态：shortcode、按钮数、媒体数 |
+| Instagram | `__insDl.media(0)` | 对第 0 条动态跑完整取址链路，打印全部候选地址 |
+| Instagram | `__insDl.ring()` | 看进度环状态：progressId、当前百分比、总量是否已知 |
+| Instagram | `__insDl.cancel()` | 取消当前下载（等价于在加载中的按钮上再点一次） |
+| Instagram | `__insDl.clearCache()` | 清掉帖子接口缓存，强制重新请求 |
 | 微博 | `__wbDl.debug()` | 打印每张被识别的卡片：命中的选择器、帖子 id、媒体数 |
 | 微博 | `__wbDl.inspect(0)` | 对第 0 张卡片跑完整取址链路，打印所有候选地址（排查"没按钮/下不了"最快） |
 | 微博 | `__wbDl.resolve("帖子id")` | 直接调接口看解析结果 |
@@ -363,7 +376,7 @@ background 里唯一的交汇点是每个 handler 开头的 `if (msg.site === "w
 诚实地列出做不好的地方：
 
 1. **Instagram 只覆盖信息流 `article`**。帖子详情页 `/p/xxx/`、Reels 独立页、Story、私信、个人主页九宫格**目前都没有按钮**。
-2. **进度环与取消目前只在微博侧**。Instagram 走的是"直接拿地址交给下载器"，没有取字节阶段，改动会触及已稳定的路径，暂未做。
+2. **Instagram 取字节失败时会退回直拉**（没有进度环、取消也拦不住），这是为了不让 CDN 的临时拒绝把「本来能下」变成「下不了」。日志里会出现 `ins 取字节失败，退回直拉`。
 3. **含视频的轮播打包会落到图片目录**（仅 Instagram）。`handleZip` 里只读了 `imageDir`；微博侧已按内容类型分目录。
 4. **超大 zip 有内存风险**。默认目录模式下 zip 会转成 dataUrl 字符串跨上下文传递，包体超过 ~100MB 时容易失败。
 5. **视频清晰度选档不精确**（仅 Instagram）。`video_versions[].width` 常为 0，实际会退化为取数组末项。
@@ -387,7 +400,7 @@ background 里唯一的交汇点是每个 handler 开头的 `if (msg.site === "w
 
 **调试入口**：
 
-- Instagram content script → 页面 DevTools Console（隔离世界，`[ins download]` 前缀日志）
+- Instagram content script → 页面 DevTools Console（隔离世界，`[download-everything]` 前缀日志）
 - 微博 content script → 同上（`[weibo download]` 前缀日志，另有 `__wbDl.*` 诊断命令）
 - service worker → `chrome://extensions` → 找到本扩展 → **检查视图 service worker**
 - offscreen → 同一处的 **检查视图 offscreen.html**
@@ -396,17 +409,40 @@ background 里唯一的交汇点是每个 handler 开头的 `if (msg.site === "w
 
 ```bash
 node test/test-weibo.js       # 卡片识别 / 帖子 id 取值 / 接口解析 / 地址候选 / 加载与取消，55 项断言
+node test/test-content.js     # Instagram 进度环 / 取消状态机 / 按钮形态切换，30 项断言
 node test/test-offscreen.js   # 文件头识别 / 候选重试 / 拒绝 HTML / 流式进度 / 中断 / zip，66 项断言
-node test/test-background.js  # 路由隔离 / 字节交付 / 进度回传 / 取消三段式 / 请求头规则，81 项断言
+node test/test-background.js  # 路由隔离 / 字节交付 / 进度回传 / 取消三段式 / 请求头规则，91 项断言
 ```
 
-三套都是纯 Node、无依赖、直接跑，合计 202 项断言：
+四套都是纯 Node、无依赖、直接跑，合计 242 项断言：
 
 - `test-background.js` 会分别模拟不带 `site` 的下载（Instagram 路径）和 `site: "weibo"` 的下载，断言目录、前缀、`saveAs` 互不影响——改 background 后跑一遍即可确认没有波及 Instagram；
+- `test-content.js` 只桩按钮与消息这一层，专测 Instagram 的环：解析阶段封顶 12%、按字节比例走并封顶 98、取消后迟到的进度不许再画环；
 - `test-offscreen.js` 专门守住「HTML 错误页被当成图片存成 .htm」这个老 bug：断言下载器拿到的是 `blob:` / `data:` 而不是网络地址，以及中断后不再尝试后续候选；
 - `test-weibo.js` 里的 DOM 桩只实现识别与解析用到的那部分，用最小环境跑真实代码。
 
 ## 更新日志
+
+### v2.1.0
+
+把微博那套「进度可见 + 随时能退」补到 Instagram，并给 README 上了中/英/日/韩四语：
+
+- **Instagram 也有进度环了**：解析阶段 0→12% 按时间缓升，取字节阶段按 `已取字节 / Content-Length` 顺时针填充，字节取完填满 100%（此刻保存框弹出），保存框关掉才复位。数据仍走 offscreen 流式上报那道链路，与微博共用同一个 `progressId` 通道
+- **Instagram 也能取消**：加载中再点一次按钮即取消，三层一起停手——本地立刻收环、`AbortController` 断掉 fetch、保存框已弹出则 `chrome.downloads.cancel()`。按钮在加载中变成实心方块、悬停转红，提示文字改为「下载中，点击取消」
+- **Instagram 改成字节先行**：不再把地址直接丢给 `chrome.downloads`，而是由 offscreen 取回真实字节再交付（扩展名按真实文件头定）；取字节失败时**自动退回直拉**，保证 CDN 偶发拒绝不会把「本来能下」变成「下不了」
+- 打包 zip 同样接入进度与取消（按项数推进，取消即丢包不落盘）
+- 新增 `__insDl.*` 控制台诊断（`debug` / `media` / `ring` / `cancel` / `clearCache`），与微博的 `__wbDl.*` 对齐
+- 回归测试 202 → **242 项**（新增 `test/test-content.js` 30 项，`test/test-background.js` 81 → 91 项）
+- README 增加 English / 日本語 / 한국어 三个版本，顶部语言切换
+
+### v2.0.1
+
+一次纯界面/命名整理，下载逻辑零改动：
+
+- 扩展显示名 `ins download` → **download-everything**（与仓库同名），弹窗标题、悬浮按钮 `title`、控制台日志前缀 `[download-everything]` 一并统一
+- 弹窗两行开关只保留站点名（`Instagram` / `微博`），去掉「下载」后缀；文字悬停变蓝加下划线、点击跳转对应站点，右侧开关行为不变
+- 设置页：Instagram 与微博的**站点标题都移到卡片框外**、字号统一，标题括号内的站点名为可点击链接；Instagram 的图片 / 视频设置同处一张卡片内
+- 加载目录仍叫 `ins-download`，默认下载子目录（`下载\ins-download\*`、`下载\weibo-download\*`）与存储键全部不变，已有设置与已下载文件不受影响
 
 ### v2.0.0
 
