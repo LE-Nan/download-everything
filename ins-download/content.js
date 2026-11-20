@@ -1,8 +1,14 @@
-/* ins download - content script
+/* download-everything - content script
  * 每条 Instagram 动态（article）注入一个下载按钮，
  * 按钮挂在 document.body（position:fixed），定位在动态卡片右侧外部，
  * 避免与卡片内的关注/菜单按钮冲突，也避开视频上的透明交互层。
  * 轮播动态点击时下载当前正在显示的那一项媒体。
+ *
+ * v2.1.0 起与微博对齐：
+ *   按钮点下去进入加载态，外圈画真实字节进度环，加载态里「再点一次 = 取消」。
+ *   取消分三层落地：本地立刻收环（点击必须即时反馈）、通知 background 断掉
+ *   offscreen 的取字节请求、保存框已弹出则 chrome.downloads.cancel()。
+ *   三条链路都归一成 canceled，上层静默收尾（不闪红、不重试）。
  */
 (function () {
   "use strict";
@@ -131,35 +137,174 @@
     return pool[0];
   }
 
+  // ---------- 按钮 ----------
+  const TITLE_IDLE = "下载（download-everything）";
+  const TITLE_BUSY = "下载中，点击取消";
+
   function makeButton() {
     const btn = document.createElement("button");
     btn.className = "ins-dl-btn";
-    btn.title = "下载（ins download）";
+    btn.title = TITLE_IDLE;
+    // 两个图标叠着放，靠 .ins-dl-progress 切换：下载中显示「停止」方块，
+    // 让「再点一次 = 取消」这件事在视觉上说得通（否则用户以为点了没反应）
     btn.innerHTML =
-      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+      '<svg class="ins-dl-ico ins-dl-ico-dl" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
       '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>' +
       '<polyline points="7 10 12 15 17 10"/>' +
-      '<line x1="12" y1="15" x2="12" y2="3"/></svg>';
+      '<line x1="12" y1="15" x2="12" y2="3"/></svg>' +
+      '<svg class="ins-dl-ico ins-dl-ico-stop" viewBox="0 0 24 24">' +
+      '<rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>';
     return btn;
   }
 
   function flash(btn, cls) {
+    if (!btn) return;
     btn.classList.add(cls);
     setTimeout(() => btn.classList.remove(cls), 1500);
   }
 
-  // 页面底部错误提示条：失败时给出明确原因，不再“无反应”
-  function showToast(text) {
+  /* ---------- 下载进度环 ----------
+   * 视频动辄几 MB～几十 MB，从点击到弹出保存框要 5～15 秒。这段时间以前只有
+   * 一个半透明状态，看不出在动。现在按钮外圈画一个顺时针进度环：
+   *   已取回的字节 → 绿色填充；未取回 → 留空
+   * 数据来源是 offscreen 边下边报的字节数（经 background 转发到本脚本）；
+   * Content-Length 缺失时按时间缓慢爬升，最多爬到 92%，不会假装完成。
+   * 字节取完立即填满到 100%——那一刻保存框正要弹出；等用户点保存、
+   * 下载状态变成 complete，才收尾恢复原样。
+   */
+  const ring = { pid: null, btn: null, p: 0, ceiling: 12, known: false, timer: 0 };
+
+  /* 已被用户取消的 progressId。取消之后：
+   *   - 正在解析媒体的：解析结果回来也不许再发起下载
+   *   - 正在取字节的：后台断掉请求，响应回来时按 canceled 静默收尾
+   * 用定时清除而不是立即删，是因为取消与响应回来之间还有几个异步跳。 */
+  const canceledIds = new Set();
+
+  function isCanceled(pid) {
+    return !!(pid && canceledIds.has(pid));
+  }
+
+  function markCanceled(pid) {
+    if (!pid) return;
+    canceledIds.add(pid);
+    setTimeout(() => canceledIds.delete(pid), 30000);
+  }
+
+  function paintRing() {
+    if (ring.btn) ring.btn.style.setProperty("--ins-dl-p", ring.p.toFixed(1));
+  }
+
+  function stopRingTimer() {
+    if (ring.timer) {
+      clearInterval(ring.timer);
+      ring.timer = 0;
+    }
+  }
+
+  function newProgressId() {
+    return "ig" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+  }
+
+  function startRing(btn, pid) {
+    endRing(); // 结束上一个没收尾的进度，避免两个环打架
+    ring.pid = pid;
+    ring.btn = btn;
+    ring.p = 2;
+    ring.ceiling = 12; // 解析媒体阶段：慢慢爬到 12%
+    ring.known = false;
+    btn.classList.add("ins-dl-progress");
+    // 提示文案同步换成「点击取消」：按钮此刻是可控的，不再是纯展示
+    btn.title = TITLE_BUSY;
+    btn.setAttribute("aria-label", "取消下载");
+    paintRing();
+    stopRingTimer();
+    ring.timer = setInterval(() => {
+      if (ring.known || !ring.btn) return;
+      if (ring.p >= ring.ceiling) return;
+      ring.p = Math.min(ring.ceiling, ring.p + Math.max(0.45, (ring.ceiling - ring.p) * 0.08));
+      paintRing();
+    }, 260);
+  }
+
+  // pid 省略时强制清空；传了 pid 则只在它仍是当前进度时收尾
+  function endRing(pid) {
+    if (pid && ring.pid && pid !== ring.pid) return;
+    stopRingTimer();
+    if (ring.btn) {
+      ring.btn.classList.remove("ins-dl-progress");
+      ring.btn.style.removeProperty("--ins-dl-p");
+      ring.btn.title = TITLE_IDLE;
+      ring.btn.removeAttribute("aria-label");
+    }
+    ring.pid = null;
+    ring.btn = null;
+    ring.p = 0;
+    ring.ceiling = 12;
+    ring.known = false;
+  }
+
+  function onRingProgress(msg) {
+    if (!ring.pid || msg.id !== ring.pid || !ring.btn) return;
+    if (msg.phase === "fetch") {
+      if (msg.total > 0) {
+        // 总量已知：按真实字节比例走，最多到 98，留 100 给「字节取完」这一刻
+        ring.known = true;
+        ring.p = Math.max(ring.p, Math.min(98, (msg.loaded / msg.total) * 100));
+        paintRing();
+      } else {
+        // 总量未知（分块传输）：退回时间爬升
+        ring.known = false;
+        ring.ceiling = Math.max(ring.ceiling, 92);
+      }
+      return;
+    }
+    if (msg.phase === "save") {
+      // 字节已取完，保存框正要弹出：填满
+      ring.known = true;
+      ring.ceiling = 100;
+      ring.p = 100;
+      paintRing();
+    }
+  }
+
+  // 与微博共用同一条进度通道（消息 type 统一为 wb-dl-progress）
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (!msg || msg.type !== "wb-dl-progress") return;
+    onRingProgress(msg);
+  });
+
+  /* 加载中再次点击 = 取消。分三层收尾：
+   *   1) 立刻把进度环收掉，按钮回到原样（不等后台确认，点击必须有即时反馈）
+   *   2) 通知后台：断掉 offscreen 的取字节请求，若保存框已弹出则一并取消该次下载
+   *   3) 记下 pid，后续回来的响应按 canceled 处理，不闪红、不再弹保存框
+   */
+  function cancelActive(btn) {
+    const pid = ring.pid;
+    if (!pid) return;
+    markCanceled(pid);
+    endRing();
+    flash(btn, "ins-dl-canceled");
+    showToast("已取消下载", "info");
+    chrome.runtime.sendMessage({ action: "cancel", progressId: pid }, () =>
+      void chrome.runtime.lastError
+    );
+  }
+
+  // kind 为空是错误提示（红）；"info" 是中性提示（深灰蓝），如「已取消」
+  function showToast(text, kind) {
     const t = document.createElement("div");
-    t.className = "ins-dl-toast";
+    t.className = "ins-dl-toast" + (kind === "info" ? " ins-dl-toast-info" : "");
     t.textContent = text;
     document.body.appendChild(t);
-    setTimeout(() => t.remove(), 5000);
+    setTimeout(() => t.remove(), kind === "info" ? 2200 : 5000);
   }
 
   function errorText(resp) {
     if (chrome.runtime.lastError) return chrome.runtime.lastError.message;
     if (resp && resp.error === "permission") return "文件夹授权已失效，请到插件设置页重新授权";
+    if (resp && resp.error === "media-blocked") return "Instagram 拒绝了该地址，换一条试试";
+    if (resp && resp.error === "all-fetch-failed") return "全部媒体都下载失败";
+    if (resp && resp.error === "aborted") return "已取消";
     if (resp && resp.error) return String(resp.error);
     return "未知错误";
   }
@@ -312,7 +457,7 @@
       } catch (e) { /* ignore */ }
     }
     shortcodeCache[shortcode] = media;
-    console.debug("[ins download] 帖子", shortcode, "取到媒体数:", media.length);
+    console.debug("[download-everything] 帖子", shortcode, "取到媒体数:", media.length);
     return media;
   }
 
@@ -326,17 +471,34 @@
     return (ge || sorted[sorted.length - 1]).url;
   }
 
-  function downloadItem(btn, item, nameSuffix) {
+  function downloadItem(btn, item, nameSuffix, pid) {
     const url = resolveUrl(item);
+    const id = pid || newProgressId();
     if (!url || !url.startsWith("http")) {
+      endRing(id);
       flash(btn, "ins-dl-error");
-      btn.title = "未找到可下载的媒体地址";
+      showToast("未找到可下载的媒体地址");
       return false;
     }
+    // 解析阶段就被取消的，不要把下载再发出去
+    if (isCanceled(id)) {
+      endRing(id);
+      return false;
+    }
+    if (!pid) startRing(btn, id);
     chrome.runtime.sendMessage(
-      { action: "download", url, type: item.type, nameSuffix: nameSuffix || "" },
+      { action: "download", url, type: item.type, nameSuffix: nameSuffix || "", progressId: id },
       (resp) => {
-        if (chrome.runtime.lastError || !resp || !resp.ok) {
+        // 取消：按静默收尾处理（浏览器下载被取消也走这里）
+        if (isCanceled(id) || (resp && (resp.canceled || resp.error === "aborted"))) {
+          endRing(id);
+          return;
+        }
+        endRing(id);
+        if (chrome.runtime.lastError || !resp) {
+          flash(btn, "ins-dl-error");
+          showToast("下载请求没有响应，请重试");
+        } else if (!resp.ok) {
           flash(btn, "ins-dl-error");
           showToast("下载失败：" + errorText(resp));
         } else {
@@ -390,13 +552,23 @@
       ev.preventDefault();
       ev.stopPropagation();
       closeMenu();
-      if (btn.classList.contains("ins-dl-loading")) return;
-      btn.classList.add("ins-dl-loading");
-      // 全部媒体打包成一个 zip 一次下载，不再逐项弹保存框
+      if (ring.pid) return; // 已有下载在进行
+      // 全部媒体打包成一个 zip 一次下载，不再逐项弹保存框；
+      // 打包也走同一条进度通道：offscreen 每取完一项报一次，环按项数走
+      const pid = newProgressId();
       const items = list.map((item) => ({ url: resolveUrl(item), type: item.type }));
-      chrome.runtime.sendMessage({ action: "zip", items }, (resp) => {
-        btn.classList.remove("ins-dl-loading");
-        if (chrome.runtime.lastError || !resp || !resp.ok) {
+      startRing(btn, pid);
+      chrome.runtime.sendMessage({ action: "zip", items, progressId: pid }, (resp) => {
+        // 打包途中取消（或它自己的保存框被取消）：静默收尾
+        if (isCanceled(pid) || (resp && (resp.canceled || resp.error === "aborted"))) {
+          endRing(pid);
+          return;
+        }
+        endRing(pid);
+        if (chrome.runtime.lastError || !resp) {
+          flash(btn, "ins-dl-error");
+          showToast("打包请求没有响应，请重试");
+        } else if (!resp.ok) {
           flash(btn, "ins-dl-error");
           showToast("打包下载失败：" + errorText(resp));
         } else {
@@ -419,16 +591,28 @@
     ev.preventDefault();
     ev.stopPropagation();
     const btn = ev.currentTarget;
-    if (btn.classList.contains("ins-dl-loading")) return;
+    if (openMenu) {
+      closeMenu();
+      return;
+    }
+    if (ring.pid) {
+      // 加载中再点一次 = 取消。但只允许取消「自己这条按钮」发起的下载，
+      // 别的卡片正在下载时点它会容易被误解成"我取消了别人"，给个提示就好
+      if (ring.btn === btn) cancelActive(btn);
+      else showToast("正在下载另一条动态，请稍候", "info");
+      return;
+    }
+
+    // 解析媒体也要等接口，先把进度环点起来，让点击立刻有反馈
+    const pid = newProgressId();
+    startRing(btn, pid);
 
     // 优先走帖子数据接口：能拿到全部轮播项和视频真实 mp4 地址
     let list = [];
     const sc = findShortcode(article);
-    if (sc) {
-      btn.classList.add("ins-dl-loading");
-      list = await fetchPostMedia(sc);
-      btn.classList.remove("ins-dl-loading");
-    }
+    if (sc) list = await fetchPostMedia(sc);
+    // 解析期间被用户取消：不再发起下载、也不弹多张菜单
+    if (isCanceled(pid)) return;
 
     if (!list.length) {
       // 接口失败，回退 DOM 方案
@@ -437,20 +621,18 @@
         .map((m) => getMediaInfo(m))
         .filter((info) => info && info.url);
     }
+    if (isCanceled(pid)) return;
     if (!list.length) {
+      endRing(pid);
       flash(btn, "ins-dl-error");
       showToast("未找到可下载的媒体地址（接口与页面解析均未取到）");
       return;
     }
     if (list.length === 1) {
-      downloadItem(btn, list[0], "");
+      downloadItem(btn, list[0], "", pid); // 沿用同一个进度 id
       return;
     }
-    // 多张：弹出单张/多张选择菜单
-    if (openMenu) {
-      closeMenu();
-      return;
-    }
+    endRing(pid); // 等用户选菜单，先收掉进度
     // 当前显示项在列表中的序号（按 DOM 顺序对应轮播顺序）
     const domList = collectAllMedia(article);
     const cur = pickCurrentMedia(article);
@@ -544,6 +726,56 @@
 
   window.addEventListener("scroll", schedulePosition, true);
   window.addEventListener("resize", schedulePosition);
+
+  // 诊断入口：Instagram 页面 DevTools 控制台（选中扩展的隔离世界）里执行
+  //   __insDl.debug()    打印当前识别到的每条动态：按钮数 / 媒体数 / shortcode
+  //   __insDl.ring()     查看进度环状态（pid / 百分比 / 是否已知总量）
+  //   __insDl.cancel()   取消当前下载（等价于在加载中的按钮上再点一次）
+  //   __insDl.media(0)   对第 0 条动态跑完整取址链路，打印候选地址
+  window.__insDl = {
+    scan,
+    // 进度环 / 取消状态机（回归测试用；也可在控制台手动演练）
+    _makeBtn: makeButton,
+    _startRing: startRing,
+    _endRing: endRing,
+    _cancelActive: cancelActive,
+    _isCanceled: isCanceled,
+    ring: () => ({ pid: ring.pid, percent: Math.round(ring.p), known: ring.known }),
+    cancel() {
+      if (!ring.pid) {
+        console.log("[download-everything] 当前没有进行中的下载");
+        return false;
+      }
+      console.log("[download-everything] 取消", ring.pid);
+      cancelActive(ring.btn);
+      return true;
+    },
+    debug() {
+      const rows = entries.map((e) => ({
+        shortcode: e.article.isConnected ? findShortcode(e.article) : null,
+        buttons: e.dead ? 0 : 1,
+        media: e.article.isConnected ? collectAllMedia(e.article).length : 0
+      }));
+      console.table(rows);
+      return rows;
+    },
+    media(index) {
+      const list = Array.from(document.querySelectorAll("article"))[index || 0];
+      if (!list) {
+        console.warn("[download-everything] 没有第", index || 0, "条动态");
+        return Promise.resolve([]);
+      }
+      const sc = findShortcode(list);
+      if (!sc) return Promise.resolve([]);
+      return fetchPostMedia(sc).then((media) => {
+        console.log("[download-everything] shortcode", sc, "媒体数", media.length, media);
+        return media;
+      });
+    },
+    clearCache() {
+      for (const k in shortcodeCache) delete shortcodeCache[k];
+    }
+  };
 
   loadState();
   observer.observe(document.documentElement, { childList: true, subtree: true });

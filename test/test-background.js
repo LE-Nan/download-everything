@@ -128,7 +128,7 @@ const dirOf = (filename) => filename.split("/").slice(0, 2).join("/");
 const baseName = (filename) => filename.split("/").pop();
 
 (async () => {
-  console.log("== 1. ins 原生路径（不传 site，行为应与 1.0.0 一致）==");
+  console.log("== 1. ins 原生路径（不传 site，无 progressId 也应正常下载）==");
   storageData = {};
   downloads.length = 0;
   offscreenMsgs.length = 0;
@@ -137,10 +137,16 @@ const baseName = (filename) => filename.split("/").pop();
   check("落到 ins-download/images", dirOf(downloads[0].filename), "ins-download/images");
   check("文件名前缀 ins_image_", baseName(downloads[0].filename).startsWith("ins_image_"), true);
   check("saveAs 为 false", downloads[0].saveAs, false);
+  // v2.1.0：ins 与微博一样先取字节再交付，进度环才有字节数可画
   check(
-    "ins 不走微博取字节链路（零额外请求）",
+    "ins 也走取字节链路（进度环数据来源）",
     offscreenMsgs.filter((m) => m.action === "save-media").length,
-    0
+    1
+  );
+  check(
+    "ins 取字节的 kind 是 image",
+    offscreenMsgs.find((m) => m.action === "save-media").kind,
+    "image"
   );
 
   console.log("== 2. ins 视频路径（不传 site）==");
@@ -148,6 +154,80 @@ const baseName = (filename) => filename.split("/").pop();
   await send({ action: "download", url: "https://cdn/v.mp4", type: "video" });
   check("落到 ins-download/videos", dirOf(downloads[0].filename), "ins-download/videos");
   check("文件名前缀 ins_video_", baseName(downloads[0].filename).startsWith("ins_video_"), true);
+
+  console.log("== 2b. ins 带 progressId：进度转发到发起标签页 ==");
+  storageData = {};
+  downloads.length = 0;
+  offscreenMsgs.length = 0;
+  progressMsgs.length = 0;
+  const insSender = { tab: { id: 7 } };
+  let release2b;
+  saveGate = new Promise((res) => (release2b = res));
+  saveResult = {
+    ok: true,
+    saved: "blob",
+    url: "blob:chrome-extension://test-extension-id/ig-progress",
+    ext: "jpg",
+    size: 1024
+  };
+  const insJob = send(
+    { action: "download", url: "https://cdn/p.jpg", type: "image", progressId: "ig-test-1" },
+    insSender
+  );
+  await tick();
+  // 取字节还挂在 gate 上，此刻 pid 仍绑定着标签页 —— 注入一条字节进度看是否转发
+  // （这条消息不回复，只做转发，所以不能 await 它的 sendResponse）
+  onMessage({ action: "wb-fetch-progress", progressId: "ig-test-1", loaded: 50, total: 100 }, {}, () => {});
+  await tick();
+  const fwd = progressMsgs.find(
+    (m) => m.tabId === 7 && m.msg.type === "wb-dl-progress" && m.msg.phase === "fetch"
+  );
+  check("进度消息转发到 ins 标签页", !!fwd, true);
+  check("带上已取字节数与总量", fwd && [fwd.msg.loaded, fwd.msg.total], [50, 100]);
+  release2b();
+  saveGate = null;
+  await insJob;
+  saveResult = null;
+
+  console.log("== 2c. ins 取消：取消先到，取字节回来也不许再下载 ==");
+  downloads.length = 0;
+  offscreenMsgs.length = 0;
+  let release;
+  saveGate = new Promise((res) => (release = res));
+  saveResult = {
+    ok: true,
+    saved: "blob",
+    url: "blob:chrome-extension://test-extension-id/ig-cancel",
+    ext: "jpg",
+    size: 1024
+  };
+  const canceledJob = send(
+    { action: "download", url: "https://cdn/q.jpg", type: "image", progressId: "ig-test-2" },
+    insSender
+  );
+  await tick();
+  await send({ action: "cancel", progressId: "ig-test-2" });
+  release();
+  saveGate = null;
+  r = await canceledJob;
+  check("取消后返回 canceled", r.canceled, true);
+  check("取消后不再触发下载", downloads.length, 0);
+  check(
+    "取消后释放已取回的 blob",
+    offscreenMsgs.some((m) => m.action === "release-blob"),
+    true
+  );
+  saveResult = null;
+
+  console.log("== 2d. ins 取字节失败时退回直拉（不把能下的变成下不了）==");
+  downloads.length = 0;
+  offscreenMsgs.length = 0;
+  saveResult = { ok: false, error: "media-blocked", tried: [] };
+  r = await send({ action: "download", url: "https://cdn/fallback.jpg", type: "image" });
+  check("回退后仍返回成功", r.ok, true);
+  check("回退直接用原地址", downloads[0].url, "https://cdn/fallback.jpg");
+  check("回退仍落到默认目录", dirOf(downloads[0].filename), "ins-download/images");
+  saveResult = null;
 
   console.log("== 3. 微博图片（小文件）：offscreen 取字节后以 dataUrl 交付 ==");
   storageData = {};
@@ -316,9 +396,16 @@ const baseName = (filename) => filename.split("/").pop();
   console.log("== 7. ins 自定义目录键不受微博键影响 ==");
   storageData = { weiboImageCustom: true };
   downloads.length = 0;
+  offscreenMsgs.length = 0;
+  saveResult = null; // ins 没设自定义目录，offscreen 不会拿到 dirKey
   r = await send({ action: "download", url: "https://cdn/y.jpg", type: "image" });
   check("ins 仍走 chrome.downloads", r.ok, true);
   check("ins 落到默认目录", dirOf(downloads[0].filename), "ins-download/images");
+  check(
+    "ins 不会误用微博的目录句柄",
+    offscreenMsgs.find((m) => m.action === "save-media").dirKey,
+    null
+  );
 
   console.log("== 8. 自定义目录名覆盖默认 ==");
   storageData = { weiboVideoDir: "我的/微博" };

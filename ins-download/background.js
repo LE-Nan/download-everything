@@ -1,10 +1,12 @@
-/* ins download - background service worker
+/* download-everything - background service worker
  * 两种下载模式：
  *  1) 用户选择了自定义文件夹 -> 经 offscreen document 用 File System Access API 写入该文件夹
  *  2) 默认模式 -> chrome.downloads 下载到浏览器下载目录的子文件夹（不询问）
  *
  * 按 site 路由：msg.site === "weibo" 走微博专用逻辑（独立的目录配置与文件名前缀），
- * 其余情况（不传 site 或 site === "ins"）完全走原有 ins 逻辑，行为不变。
+ * 其余情况（不传 site 或 site === "ins"）走 ins 逻辑（独立的目录配置与 ins_ 前缀）。
+ * 两条链路都先由 offscreen 取回真实字节再交付，因此都支持进度回传与取消；
+ * 目录、文件名、请求头仍完全独立，互不干扰。
  */
 
 const OFFSCREEN_PATH = "offscreen.html";
@@ -29,7 +31,7 @@ function timestamp() {
 
 /* 下载进度回传：内容脚本发下载请求时带一个 progressId，这里记住它来自哪个标签页，
  * 之后 offscreen 边下边报的字节数、以及「字节已取完」这些事件都转发回该标签页。
- * 与 ins 完全无关——ins 的消息不带 progressId，下面所有函数都会直接返回。
+ * Instagram 与微博现在共用这一套（两个站点的内容脚本各自画自己的环）。
  */
 const progressTabs = new Map(); // progressId -> tabId
 
@@ -146,15 +148,86 @@ async function handleDownload(msg, sender) {
   const ext = msg.type === "video" ? "mp4" : "jpg";
   // nameSuffix 用于多张下载时自动编号，如 _1、_2，保证命名不冲突
   const suffix = msg.nameSuffix || "";
-  const name = "ins_" + msg.type + "_" + timestamp() + suffix + "." + ext;
+  const base = "ins_" + msg.type + "_" + timestamp() + suffix;
 
+  const pid = msg.progressId || null;
+  // 兼容旧消息格式（只带 url），新格式带 candidates（多档候选）
+  const candidates = (Array.isArray(msg.candidates) ? msg.candidates : []).filter(Boolean);
+  if (!candidates.length && msg.url) candidates.push(msg.url);
+
+  bindProgress(pid, sender);
+  // 连点两下：取消可能比下载请求先到，这里先认账
+  if (isCanceled(pid)) {
+    releaseCancel(pid);
+    releaseProgress(pid);
+    return { ok: true, canceled: true };
+  }
+  if (!candidates.length) {
+    releaseProgress(pid);
+    return { ok: false, error: "no-candidates" };
+  }
+
+  /* Instagram 也改成「先取字节再交付」，与微博同一条链路：
+   * 内容脚本要画进度环就得知道已取多少字节，而 chrome.downloads 直接拉地址时
+   * 扩展拿不到任何中间进度；字节先行还顺带解决了「服务器返回 HTML 错误页时
+   * 后缀被改成 .htm」这类问题（扩展名按真实文件头决定）。
+   * progressId 同时是取消的凭据：用户再点一次按钮，offscreen 会断掉这次请求。
+   */
+  try {
+    await ensureOffscreen();
+    const saved = await chrome.runtime.sendMessage({
+      target: "offscreen",
+      action: "save-media",
+      candidates,
+      kind: key,
+      fileName: base, // 不含扩展名，扩展名由 offscreen 按真实文件头决定
+      progressId: pid,
+      dirKey: cfg[key + "Custom"] ? key + "DirHandle" : null
+    });
+
+    // 取字节过程中被取消：不报错、不重试，也不建 blob
+    if (isCanceled(pid) || (saved && saved.error === "aborted")) {
+      if (saved && saved.url) releaseBlobLater(saved.url);
+      return { ok: true, canceled: true };
+    }
+
+    if (saved && saved.ok) {
+      if (saved.saved === "fs") {
+        // 直接写盘，没有保存框：字节取完即完成
+        notifyProgress(pid, { phase: "save" });
+        return { ok: true };
+      }
+      const name = base + "." + (saved.ext || ext);
+      const dir = (cfg[key + "Dir"] || "ins-download/" + key + "s").replace(/^\/+|\/+$/g, "");
+      const resp = await deliverBytes(saved, dir + "/" + name, pid);
+      releaseBlobLater(saved.url);
+      return resp;
+    }
+
+    // 取字节失败（CDN 拒绝扩展来源 / 不是可识别媒体）：退回原来的直拉方式，
+    // 宁可没有进度环也不能把原本能下的内容变成下不了。
+    if (isCanceled(pid)) return { ok: true, canceled: true };
+    console.warn("[download-everything] ins 取字节失败，退回直拉", saved && saved.error);
+    notifyProgress(pid, { phase: "save" });
+    return legacyInsDownload(candidates[0], key, cfg, base + "." + ext);
+  } catch (e) {
+    return legacyInsDownload(candidates[0], key, cfg, base + "." + ext);
+  } finally {
+    releaseProgress(pid);
+    releaseCancel(pid);
+  }
+}
+
+/* 旧路径（v2.0.x 及之前）：把地址直接交给下载器。
+ * 只在「取字节」失败时兜底使用，行为与改造前一致。 */
+async function legacyInsDownload(url, key, cfg, name) {
   if (cfg[key + "Custom"]) {
     try {
       await ensureOffscreen();
       const resp = await chrome.runtime.sendMessage({
         target: "offscreen",
         dirKey: key + "DirHandle",
-        url: msg.url,
+        url,
         fileName: name
       });
       return resp || { ok: false, error: "no-response" };
@@ -162,15 +235,21 @@ async function handleDownload(msg, sender) {
       return { ok: false, error: String(e && e.message ? e.message : e) };
     }
   }
-
   const dir = (cfg[key + "Dir"] || "ins-download/" + key + "s").replace(/^\/+|\/+$/g, "");
-  return downloadViaChrome(msg.url, dir + "/" + name);
+  return downloadViaChrome(url, dir + "/" + name);
 }
 
 async function handleZip(msg, sender) {
   if (msg.site === "weibo") return handleWeiboZip(msg, sender);
   const cfg = await chrome.storage.sync.get(["imageCustom", "imageDir"]);
   const zipName = "ins_images_" + timestamp() + ".zip";
+  const pid = msg.progressId || null;
+  bindProgress(pid, sender);
+  if (isCanceled(pid)) {
+    releaseCancel(pid);
+    releaseProgress(pid);
+    return { ok: true, canceled: true };
+  }
   try {
     await ensureOffscreen();
     const resp = await chrome.runtime.sendMessage({
@@ -178,16 +257,37 @@ async function handleZip(msg, sender) {
       action: "zip",
       items: msg.items,
       zipName,
+      prefix: "ins_",
+      /* progressId：offscreen 每取完一项报一次，进度环按项数走；
+       * 与微博共用同一条进度通道（消息 type 统一是 wb-dl-progress）。 */
+      progressId: pid,
       dirKey: cfg.imageCustom ? "imageDirHandle" : null
     });
+    // 打包途中取消：已取到的字节直接丢弃，不落盘
+    if (isCanceled(pid) || (resp && resp.error === "aborted")) {
+      return { ok: true, canceled: true };
+    }
     if (resp && resp.ok && resp.dataUrl) {
       // 默认模式：走 chrome.downloads，只下载一个 zip（至多一次保存提示）
       const dir = (cfg.imageDir || "ins-download/images").replace(/^\/+|\/+$/g, "");
-      return downloadViaChrome(resp.dataUrl, dir + "/" + zipName);
+      notifyProgress(pid, { phase: "save" });
+      const r = await downloadViaChrome(resp.dataUrl, dir + "/" + zipName);
+      if (!r.ok) return r;
+      activeDownloadIds.set(pid, r.downloadId);
+      if (isCanceled(pid)) {
+        cancelChromeDownload(r.downloadId);
+        return { ok: true, canceled: true };
+      }
+      const end = await watchDownload(r.downloadId);
+      return end && end.canceled ? { ok: true, canceled: true } : end;
     }
+    if (resp && resp.ok) notifyProgress(pid, { phase: "save" });
     return resp || { ok: false, error: "no-response" };
   } catch (e) {
     return { ok: false, error: String(e && e.message ? e.message : e) };
+  } finally {
+    releaseProgress(pid);
+    releaseCancel(pid);
   }
 }
 
@@ -247,7 +347,7 @@ async function setupWeiboHeaders() {
         addRules: [base]
       });
     } catch (e2) {
-      console.warn("[ins download] 微博请求头规则安装失败", e2 && e2.message);
+      console.warn("[download-everything] 微博请求头规则安装失败", e2 && e2.message);
     }
   }
 }
@@ -592,7 +692,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
   // 内容脚本在加载中再次点击按钮 = 取消这条下载
-  if (msg.action === "wb-cancel") {
+  // action:"cancel" 是新名字（ins 与微博共用），"wb-cancel" 保留兼容旧脚本
+  if (msg.action === "cancel" || msg.action === "wb-cancel") {
     sendResponse(requestCancel(msg.progressId));
     return;
   }
