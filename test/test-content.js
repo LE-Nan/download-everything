@@ -193,6 +193,65 @@ const api = sandbox.window.__insDl;
   check("当前 pid 是新任务的", api.ring().pid, "ig-t3");
   api._endRing("ig-t3");
 
+  console.log("== 8. 选档：按设置取档，源最高档更低时取源最高档 ==");
+  const img = (resources) => ({ type: "image", url: "fallback.jpg", resources });
+  const vid = (resources) => ({ type: "video", url: "fallback.mp4", resources });
+
+  check(
+    "默认原图 → 图片取源最高档",
+    api._resolveUrl(img([{ url: "w640.jpg", w: 640 }, { url: "w1080.jpg", w: 1080 }])),
+    "w1080.jpg"
+  );
+  check(
+    "默认原画质 → 视频取源最高档（源最高只有 720）",
+    api._resolveUrl(vid([{ url: "w480.mp4", w: 480 }, { url: "w720.mp4", w: 720 }])),
+    "w720.mp4"
+  );
+  check(
+    "源只有一档时就用它",
+    api._resolveUrl(img([{ url: "w240.jpg", w: 240 }])),
+    "w240.jpg"
+  );
+  check("没有候选表时用原始地址", api._resolveUrl({ type: "image", url: "only.jpg" }), "only.jpg");
+
+  // 视频清晰度按设置页标注的技术标准取档（原画质 = Infinity，已在上面覆盖）
+  const live = api._settings;
+  live.videoQuality = "480";
+  check(
+    "设置标清 480 → 取不低于 480 的最小一档",
+    api._resolveUrl(vid([{ url: "w360.mp4", w: 360 }, { url: "w480.mp4", w: 480 }, { url: "w720.mp4", w: 720 }])),
+    "w480.mp4"
+  );
+  live.videoQuality = "1080";
+  check(
+    "设置超清 1080 → 取 1080 档（不擅自降到 720）",
+    api._resolveUrl(vid([{ url: "w480.mp4", w: 480 }, { url: "w720.mp4", w: 720 }, { url: "w1080.mp4", w: 1080 }])),
+    "w1080.mp4"
+  );
+  live.videoQuality = "orig";
+  live.imageQuality = "720";
+  check(
+    "图片设置 720 → 取不低于 720 的最小一档",
+    api._resolveUrl(img([{ url: "w640.jpg", w: 640 }, { url: "w750.jpg", w: 750 }, { url: "w1080.jpg", w: 1080 }])),
+    "w750.jpg"
+  );
+  live.imageQuality = "orig";
+  check(
+    "srcset：设置高于源最高档（2160 > 1080）时取最大那张",
+    api._pickFromSrcset("s640.jpg 640w, l1080.jpg 1080w", 2160),
+    "l1080.jpg"
+  );
+  check(
+    "srcset：原图（Infinity）取最大那张",
+    api._pickFromSrcset("s640.jpg 640w, l1080.jpg 1080w", Infinity),
+    "l1080.jpg"
+  );
+  check(
+    "srcset：设置低于源时按设置取最近的档（不下取到最小）",
+    api._pickFromSrcset("s640.jpg 640w, l1080.jpg 1080w", 320),
+    "s640.jpg"
+  );
+
   console.log("\n结果: " + pass + " 通过 / " + fail + " 失败");
   process.exit(fail ? 1 : 0);
 })();

@@ -57,8 +57,9 @@
 
   let enabled = true;
   // 微博专有配置，与 ins 的 imageQuality / videoQuality 互不干扰。
-  // 图片默认取原图：接口返回的本来就是最大档，orj1080 并非每张图都有
-  const settings = { imageQuality: "large", videoQuality: "hd" };
+  // 图片默认取原图（orig，映射到微博的 large 档）：接口返回的本来就是最大档
+  // 视频默认取原画质：不去猜接口给到哪一档，能拿到最高的就是最高的
+  const settings = { imageQuality: "orig", videoQuality: "orig" };
 
   const entries = []; // { btn, root, dead }
   let rafPending = false;
@@ -126,9 +127,11 @@
     }
     if (changes.weiboImageQuality) {
       settings.imageQuality = changes.weiboImageQuality.newValue;
+      statusCache.clear(); // 清晰度变了，之前算好的候选地址作废，下载时按新设置重算
     }
     if (changes.weiboVideoQuality) {
       settings.videoQuality = changes.weiboVideoQuality.newValue;
+      statusCache.clear();
     }
   });
 
@@ -204,29 +207,83 @@
     return true;
   }
 
+  /* 微博图片档位：URL 首段的尺寸标记 → 实际宽度。large 是微博的原图（不压缩）。
+   * 设置页与 Instagram 共用一套取值（orig / 240 / 480 / 720 / 1080 / 2k / 4k），
+   * 这里把它翻译成微博自己的档位名，选档规则也一致：取「不低于设置的最小一档」，
+   * 源图最高档都低于设置时（比如设了 4K）就落到原图。 */
+  const IMG_TIERS = [
+    { token: "orj360", w: 360 },
+    { token: "orj480", w: 480 },
+    { token: "mw690", w: 690 },
+    { token: "mw1024", w: 1024 },
+    { token: "orj1080", w: 1080 },
+    { token: "mw2000", w: 2000 },
+    { token: "large", w: Infinity }
+  ];
+  const IMG_TARGET = {
+    "240": 240,
+    "480": 480,
+    "720": 720,
+    "1080": 1080,
+    "2k": 1440,
+    "4k": 2160,
+    orig: Infinity
+  };
+  // v2.3.1 及以前把微博档位名直接存进了 storage（large / mw690 …），读到就地折算
+  const IMG_LEGACY = {
+    large: "orig",
+    oslarge: "orig",
+    original: "orig",
+    mw2000: "2k",
+    orj1080: "1080",
+    mw1024: "720",
+    mw690: "720",
+    orj480: "480",
+    orj360: "240"
+  };
+
+  function normalizeImageQuality(q) {
+    if (IMG_TARGET[q] !== undefined) return q;
+    return IMG_LEGACY[q] || "orig";
+  }
+
+  // 设置值或档位名 → 起始档位在 IMG_TIERS 里的下标（不低于设置的最小一档）
+  function imageTierIndex(q) {
+    const target = IMG_TARGET[normalizeImageQuality(q)];
+    const i = IMG_TIERS.findIndex((t) => t.w >= target);
+    return i < 0 ? IMG_TIERS.length - 1 : i;
+  }
+
+  // 候选顺序：所选档 → 更高的档 → 原图。返回微博的档位名
+  function imageTierOrder(q) {
+    return IMG_TIERS.slice(imageTierIndex(q)).map((t) => t.token);
+  }
+
   // 换尺寸：/orj360/ → /orj1080/。首段不在白名单时原样返回，避免改坏别的路径
+  // 参数可以是设置值（orig / 720 …），也可以直接是微博档位名（large / mw690 …）
   function applyImageQuality(url, quality) {
     const m = url.match(/^(https?:\/\/[^/]+)\/([^/?#]+)\/([^?#]+)([?#].*)?$/i);
     if (!m) return url;
     if (IMG_TOKENS.indexOf(m[2].toLowerCase()) < 0) return url;
-    return m[1] + "/" + (quality || "orj1080") + "/" + m[3] + (m[4] || "");
+    let token = quality || "large";
+    // 不是微博的档位名，就当成设置值（orig / 240 / 720 / 2k …）翻译一次
+    if (IMG_TOKENS.indexOf(String(token).toLowerCase()) < 0) {
+      token = IMG_TIERS[imageTierIndex(token)].token;
+    }
+    return m[1] + "/" + token + "/" + m[3] + (m[4] || "");
   }
 
-  // 候选按优先级排列：所选清晰度 → 原图 → 中间档 → 页面原本给的地址。
+  // 候选按优先级排列：所选档 → 逐档往上 → 页面原本给的地址。
   // 微博并没有为每张图都生成所有档位，404 的档位会在取字节阶段被逐个跳过，
   // 所以这里给足备选；最后一档「原样地址」是保底——接口/页面给的地址一定真实存在。
   function imageCandidates(url, quality) {
-    const q = quality || settings.imageQuality;
     const list = [];
     const push = (u) => {
       if (u && list.indexOf(u) < 0) list.push(u);
     };
-    push(applyImageQuality(url, q));
-    push(applyImageQuality(url, "large"));
-    push(applyImageQuality(url, "mw2000"));
-    push(applyImageQuality(url, "orj1080"));
-    push(applyImageQuality(url, "mw690"));
-    push(applyImageQuality(url, "orj360"));
+    for (const token of imageTierOrder(quality || settings.imageQuality)) {
+      push(applyImageQuality(url, token));
+    }
     push(url);
     return list;
   }
@@ -398,44 +455,99 @@
     return /^https?:/i.test(u) ? u : "";
   }
 
-  function dedupe(list) {
-    const out = [];
-    for (const u of list) {
-      if (u && out.indexOf(u) < 0) out.push(u);
+  /* 视频清晰度 → 目标高度。设置页标注的技术标准就是这一档的下限：
+   * 480P / 720P / 1080P / 2K；原画质（orig）＝源最高档。
+   * hd / sd 是 v2.3.x 之前存下的值，设置页已不再提供，读到就按老语义折算。 */
+  const VIDEO_TARGET = {
+    "480": 480,
+    "720": 720,
+    "1080": 1080,
+    "2k": 1440,
+    "orig": Infinity,
+    hd: Infinity,
+    sd: 480
+  };
+
+  // 老字段名自带档位：接口不给标签时靠它判高度（判不出记 0，排到最后兜底）
+  const FIELD_HEIGHT = {
+    mp4_1080p_mp4: 1080,
+    mp4_720p_mp4: 720,
+    mp4_hd_url: 720,
+    stream_url_hd: 720,
+    mp4_sd_url: 480,
+    stream_url: 480,
+    mp4_url: 0
+  };
+
+  // playback_list 的一项里找清晰度标签（微博写的是 "1080P" 这类字样）
+  function playbackHeight(p) {
+    const labels = [
+      p.quality_label,
+      p.quality_desc,
+      p.meta && p.meta.quality_label,
+      p.play_info && p.play_info.quality_label
+    ];
+    for (const s of labels) {
+      if (typeof s !== "string") continue;
+      const m = s.match(/(\d{3,4})\s*[pP]/);
+      if (m) return parseInt(m[1], 10);
     }
-    return out;
+    // 标签缺失时退回地址里的线索：.../mp4_720p.mp4、?label=mp4_hd
+    const u = String((p.play_info && p.play_info.url) || "");
+    const mp = u.match(/mp4_(\d{3,4})p/i);
+    if (mp) return parseInt(mp[1], 10);
+    const lm = u.match(/label=mp4_(hd|sd|ld)/i);
+    if (lm) return lm[1].toLowerCase() === "hd" ? 720 : 480;
+    return 0;
   }
 
-  function videoCandidates(mediaInfo) {
+  /* 按设置把候选排成偏好顺序：不低于设置的最小一档 → 更低的档（高到低）→ 判不出高度的。
+   * 取字节阶段是逐档回退的，所以顺序本身就是「按设置生效」的落地方式。 */
+  function orderByQuality(list, q) {
+    const target = VIDEO_TARGET[q] !== undefined ? VIDEO_TARGET[q] : VIDEO_TARGET["720"];
+    const known = list.filter((x) => x.h > 0).sort((a, b) => b.h - a.h);
+    const unknown = list.filter((x) => !(x.h > 0));
+    if (target === Infinity) return known.concat(unknown); // 原画质：源最高档起步
+    const up = known.filter((x) => x.h >= target).sort((a, b) => a.h - b.h);
+    const down = known.filter((x) => x.h < target); // known 已按高到低排好，过滤后仍有序
+    return up.concat(down, unknown);
+  }
+
+  function videoCandidates(mediaInfo, quality) {
+    const q = quality || settings.videoQuality;
     if (!mediaInfo || typeof mediaInfo !== "object") return Promise.resolve([]);
-    const bases = [];
-    const push = (u) => {
+    const entries = [];
+    const push = (u, h) => {
       const v = fixProto(u);
-      if (v && bases.indexOf(v) < 0) bases.push(v);
+      if (!v) return;
+      const hit = entries.find((x) => x.url === v);
+      if (hit) {
+        // 同一地址被多路提到时，补上更高的已知档位
+        if (!hit.h && h > 0) hit.h = h;
+        return;
+      }
+      entries.push({ url: v, h: h > 0 ? h : 0 });
     };
 
     // playback_list 是微博新版给的清晰度列表（按清晰度从高到低）
     if (Array.isArray(mediaInfo.playback_list)) {
       for (const p of mediaInfo.playback_list) {
-        if (p && p.play_info && p.play_info.url) push(p.play_info.url);
+        if (p && p.play_info && p.play_info.url) push(p.play_info.url, playbackHeight(p));
       }
     }
-    // 常见字段：高清在前，标清在后
-    ["mp4_1080p_mp4", "mp4_720p_mp4", "mp4_hd_url", "stream_url_hd", "mp4_sd_url", "stream_url", "mp4_url"].forEach(
-      (k) => {
-        if (typeof mediaInfo[k] === "string") push(mediaInfo[k]);
-      }
-    );
+    // 常见字段：高清在前，标清在后（高度按字段名补齐，供选档排序用）
+    Object.keys(FIELD_HEIGHT).forEach((k) => {
+      if (typeof mediaInfo[k] === "string") push(mediaInfo[k], FIELD_HEIGHT[k]);
+    });
 
     const fid = fidOf(mediaInfo);
-    const viaComponent = fid
-      ? componentVideo(fid).then((list) => list.map((x) => x.url))
-      : Promise.resolve([]);
+    const viaComponent = fid ? componentVideo(fid) : Promise.resolve([]);
 
     return viaComponent.then((comp) => {
-      // 组件接口给的是最完整的档位列表，放最前面
-      const all = dedupe(comp.concat(bases));
-      return settings.videoQuality === "sd" ? all.slice().reverse() : all;
+      // 组件接口给的是最完整的档位列表（自带 height），放最前面
+      for (const x of comp) push(x.url, x.height);
+      // 源只提供一档时，任何设置都会落到这一档，不会因为设置不匹配而下载失败
+      return orderByQuality(entries, q).map((x) => x.url);
     });
   }
 
@@ -565,7 +677,13 @@
         const m = (a.getAttribute("href") || "").match(/fid=(\d+:[\w]+)/);
         if (m) {
           return componentVideo(m[1]).then((list) => {
-            if (list.length) out.push({ type: "video", candidates: list.map((x) => x.url) });
+            if (list.length) {
+              const ordered = orderByQuality(
+                list.map((x) => ({ url: x.url, h: x.height })),
+                settings.videoQuality
+              );
+              out.push({ type: "video", candidates: ordered.map((x) => fixProto(x.url)).filter(Boolean) });
+            }
             return out.concat(domImages(root));
           });
         }
@@ -1189,6 +1307,9 @@
     findRoot,
     parseStatus,
     imageCandidates,
+    videoCandidates,
+    // 选档排序（回归测试用）：把 [{url,h}] 按设置排成偏好顺序
+    orderByQuality,
     applyImageQuality,
     isFeedImageUrl,
     // 进度环 / 取消状态机（回归测试用；也可在控制台手动演练）

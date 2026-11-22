@@ -15,7 +15,7 @@
 
   const PROCESSED_ATTR = "data-ins-dl-processed";
   let enabled = true;
-  let settings = { imageQuality: "1080", videoQuality: "1080" };
+  let settings = { imageQuality: "orig", videoQuality: "orig" };
   const entries = []; // { btn, article }
   let rafPending = false;
 
@@ -26,14 +26,29 @@
     return I18N ? I18N.t(key, vars) : key;
   }
 
-  // P 值 -> 目标宽度（近似映射，用于从 srcset 中挑选最接近的档）
+  // 图片分辨率 → 目标宽度（Instagram 的 srcset 宽度档位，用于挑最接近的一张）
   const QUALITY_WIDTH = {
     "240": 320,
     "480": 640,
     "720": 750,
     "1080": 1080,
     "2k": 1440,
-    "4k": 2160
+    "4k": 2160,
+    "orig": Infinity // 原图 = 源最高档
+  };
+
+  /* 视频清晰度 → 目标宽度。这里严格按设置页标注的技术标准取档
+   * （480P / 720P / 1080P / 2K），视频档位不像图片那样有 320/750 这种非整数梯子；
+   * 原画质同样用 Infinity 表示「源最高档」。 */
+  const VIDEO_WIDTH = {
+    "480": 480,
+    "720": 720,
+    "1080": 1080,
+    "2k": 1440,
+    "orig": Infinity,
+    // 旧版本存下的 240 / 4k 已从清晰度选项里移除，读到就折算到最近的现役档
+    "240": 480,
+    "4k": 1440
   };
 
   function loadState() {
@@ -60,7 +75,10 @@
       else removeAllButtons();
     }
     for (const k of ["imageQuality", "videoQuality"]) {
-      if (changes[k]) settings[k] = changes[k].newValue;
+      if (changes[k]) {
+        settings[k] = changes[k].newValue;
+        clearPostCache(); // 清晰度变了，已缓存的帖子要在下次点击时按新设置重算档位
+      }
     }
   });
 
@@ -336,6 +354,12 @@
   // ---- 通过帖子数据接口取全部媒体真实地址（解决轮播懒加载/视频 blob 流问题）----
   const shortcodeCache = {};
 
+  // 缓存里存的是「这条帖子的全部档位原始地址」，真正的选档发生在点击时（resolveUrl）。
+  // 但 DOM 兜底那一路在扫描时就把 URL 定死了，所以设置一变就整体作废重取。
+  function clearPostCache() {
+    for (const k in shortcodeCache) delete shortcodeCache[k];
+  }
+
   function findShortcode(article) {
     const a = article.querySelector(
       'a[href*="/p/"], a[href*="/reel/"], a[href*="/reels/"]'
@@ -485,13 +509,19 @@
     return media;
   }
 
-  // 按设置的分辨率/清晰度从多档资源中选档（图片用 imageQuality，视频用 videoQuality）
+  /* 按设置的分辨率/清晰度从多档资源中选档（图片用 imageQuality，视频用 videoQuality）。
+   * 规则：取「不低于设置」的最小一档；如果源素材最高档都低于设置（Instagram 常见于
+   * 老帖只有 1080），就落到源素材的最高档——不会因为设置过高而下载失败或存下低清。
+   * 原图 / 原画质（orig）直接把目标设成 Infinity，于是必然落到源最高档。
+   * 这里是按点击时的设置现算的，改完设置不用刷新页面。 */
   function resolveUrl(item) {
     if (!item.resources || !item.resources.length) return item.url;
-    const q = item.type === "video" ? settings.videoQuality : settings.imageQuality;
-    const target = QUALITY_WIDTH[q] || 1080;
+    const isVideo = item.type === "video";
+    const q = isVideo ? settings.videoQuality : settings.imageQuality;
+    const table = isVideo ? VIDEO_WIDTH : QUALITY_WIDTH;
+    const target = table[q] !== undefined ? table[q] : (isVideo ? VIDEO_WIDTH["1080"] : QUALITY_WIDTH["1080"]);
     const sorted = item.resources.slice().sort((a, b) => a.w - b.w);
-    const ge = sorted.find((r) => r.w >= target);
+    const ge = sorted.find((r) => r.w >= target); // Infinity 时必然找不到，正好落到最高档
     return (ge || sorted[sorted.length - 1]).url;
   }
 
@@ -758,6 +788,11 @@
   //   __insDl.media(0)   对第 0 条动态跑完整取址链路，打印候选地址
   window.__insDl = {
     scan,
+    // 选档规则（回归测试用）：按当前设置从多档资源里挑一档
+    _resolveUrl: resolveUrl,
+    _pickFromSrcset: pickFromSrcset,
+    // 当前生效的分辨率/清晰度（回归测试可在控制台改它验证选档）
+    _settings: settings,
     // 进度环 / 取消状态机（回归测试用；也可在控制台手动演练）
     _makeBtn: makeButton,
     _startRing: startRing,
@@ -797,7 +832,7 @@
       });
     },
     clearCache() {
-      for (const k in shortcodeCache) delete shortcodeCache[k];
+      clearPostCache();
     }
   };
 

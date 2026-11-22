@@ -8,9 +8,10 @@ function t(key, vars) {
 }
 
 const QUALITY_KEYS = ["imageQuality", "videoQuality"];
+// 默认都取「原图 / 原画质」：不主动降档，也不猜站点有多少档
 const DEFAULTS = {
-  imageQuality: "1080",
-  videoQuality: "1080"
+  imageQuality: "orig",
+  videoQuality: "orig"
 };
 
 /* ================= 保存位置 ================= */
@@ -65,10 +66,53 @@ async function resetFolder(key) {
   await refreshDirUI(key);
 }
 
+/* 老版本存下的值可能已经不在选项里了（视频从 hd/sd、240/4k 改成了 480P~2K 加原画质）。
+ * 直接赋给 select 会变成「一项都没选中」的空白框，所以先按迁移表落一档，
+ * 迁移表也没有的才回落到默认值。 */
+const LEGACY_QUALITY = {
+  videoQuality: { "240": "480", "4k": "2k" },
+  weiboVideoQuality: { hd: "orig", sd: "480" },
+  twitterVideoQuality: { hd: "orig", sd: "480" },
+  // 图片分辨率：三个站点现在共用 ins 那套档位，老值（微博的尺寸标记、
+  // X 的 name 档）按实际宽度折算到最近的档，避免下拉框空白
+  weiboImageQuality: {
+    large: "orig",
+    oslarge: "orig",
+    original: "orig",
+    mw2000: "2k",
+    orj1080: "1080",
+    mw1024: "720",
+    mw690: "720",
+    orj480: "480",
+    orj360: "240"
+  },
+  twitterImageQuality: {
+    "4096x4096": "4k",
+    4096: "4k",
+    2048: "2k",
+    large: "2k",
+    medium: "720",
+    1200: "720",
+    small: "240",
+    680: "240"
+  }
+};
+
+function setQualityValue(el, value, fallback) {
+  const known = (v) => v !== undefined && v !== null && !!el.querySelector('option[value="' + v + '"]');
+  let v = value;
+  if (!known(v)) {
+    const map = LEGACY_QUALITY[el.id] || {};
+    v = map[value];
+    if (!known(v)) v = fallback;
+  }
+  el.value = v;
+}
+
 async function restore() {
   const res = await chrome.storage.sync.get(QUALITY_KEYS);
   for (const k of QUALITY_KEYS) {
-    document.getElementById(k).value = res[k] !== undefined ? res[k] : DEFAULTS[k];
+    setQualityValue(document.getElementById(k), res[k], DEFAULTS[k]);
   }
   await refreshDirUI("image");
   await refreshDirUI("video");
@@ -84,26 +128,36 @@ function save() {
   });
 }
 
-/* ================= 微博设置 =================
- * 完全独立于上面的 ins 设置：独立的 storage 键、独立的句柄、独立的默认目录。
+/* ================= 站点独立设置（微博 / X） =================
+ * 每个站点一份完全独立的 storage 键、独立句柄、独立默认目录与清晰度默认值，
+ * 版式与交互一致，所以用同一套函数按 prefix 驱动；元素 id 一律是
+ * `<prefix>Pick` / `<prefix>Reauth` / `<prefix>Reset` / `<prefix>DirDisplay`。
+ * ins 沿用上面那套独立实现（键名与历史行为都没有变）。
  */
-const WEIBO_DEFAULT_DIR = {
-  image: "weibo-download/images",
-  video: "weibo-download/videos"
-};
-const WEIBO_QUALITY_DEFAULTS = {
-  // 默认取原图：微博接口直接给的就是最大档，再降档反而丢画质；
-  // orj1080 并不是每张图都有，作为首选项容易 404，所以只作为兜底
-  weiboImageQuality: "large",
-  weiboVideoQuality: "hd"
-};
+const SITE_SECTIONS = [
+  {
+    name: "weibo",
+    dirs: { image: "weibo-download/images", video: "weibo-download/videos" },
+    prefix: { image: "weiboImage", video: "weiboVideo" },
+    // 默认取原图：接口直接给的就是最大档，orj1080 并非每张图都有
+    quality: { weiboImageQuality: "orig", weiboVideoQuality: "orig" }
+  },
+  {
+    name: "twitter",
+    dirs: { image: "twitter-download/images", video: "twitter-download/videos" },
+    prefix: { image: "twitterImage", video: "twitterVideo" },
+    // X 默认取上传原图（orig）与原画质
+    quality: { twitterImageQuality: "orig", twitterVideoQuality: "orig" }
+  }
+];
 
-function wbPrefix(which) {
-  return which === "image" ? "weiboImage" : "weiboVideo";
+function siteOf(name) {
+  for (const s of SITE_SECTIONS) if (s.name === name) return s;
+  return null;
 }
 
-async function refreshWeiboDirUI(which) {
-  const prefix = wbPrefix(which);
+async function refreshSiteDirUI(site, which) {
+  const prefix = site.prefix[which];
   const res = await chrome.storage.sync.get([prefix + "Custom", prefix + "DirName"]);
   const display = document.getElementById(prefix + "DirDisplay");
   const reauth = document.getElementById(prefix + "Reauth");
@@ -112,7 +166,7 @@ async function refreshWeiboDirUI(which) {
 
   if (res[prefix + "Custom"] !== true) {
     display.textContent = t("opt.dirDefault", {
-      path: WEIBO_DEFAULT_DIR[which].replace(/\//g, "\\")
+      path: site.dirs[which].replace(/\//g, "\\")
     });
     reauth.style.display = "none";
     reset.style.display = "none";
@@ -120,6 +174,7 @@ async function refreshWeiboDirUI(which) {
   }
 
   const name = res[prefix + "DirName"] || t("opt.pickedFolder");
+  // 浏览器重启后权限会重置，需要重新授权一次
   let perm = "granted";
   try {
     const handle = await idbGet(prefix + "DirHandle");
@@ -133,8 +188,8 @@ async function refreshWeiboDirUI(which) {
   reset.style.display = "";
 }
 
-async function pickWeiboFolder(which) {
-  const prefix = wbPrefix(which);
+async function pickSiteFolder(site, which) {
+  const prefix = site.prefix[which];
   try {
     const handle = await window.showDirectoryPicker({ mode: "readwrite" });
     await idbSet(prefix + "DirHandle", handle);
@@ -142,32 +197,32 @@ async function pickWeiboFolder(which) {
       [prefix + "Custom"]: true,
       [prefix + "DirName"]: handle.name
     });
-    await refreshWeiboDirUI(which);
+    await refreshSiteDirUI(site, which);
   } catch (e) {
     // 用户取消选择
   }
 }
 
-async function resetWeiboFolder(which) {
-  const prefix = wbPrefix(which);
+async function resetSiteFolder(site, which) {
+  const prefix = site.prefix[which];
   await idbDel(prefix + "DirHandle");
   await chrome.storage.sync.set({ [prefix + "Custom"]: false });
-  await refreshWeiboDirUI(which);
+  await refreshSiteDirUI(site, which);
 }
 
-async function restoreWeibo() {
-  const res = await chrome.storage.sync.get(Object.keys(WEIBO_QUALITY_DEFAULTS));
-  for (const k in WEIBO_QUALITY_DEFAULTS) {
+async function restoreSite(site) {
+  const res = await chrome.storage.sync.get(Object.keys(site.quality));
+  for (const k in site.quality) {
     const el = document.getElementById(k);
-    if (el) el.value = res[k] !== undefined ? res[k] : WEIBO_QUALITY_DEFAULTS[k];
+    if (el) setQualityValue(el, res[k], site.quality[k]);
   }
-  await refreshWeiboDirUI("image");
-  await refreshWeiboDirUI("video");
+  await refreshSiteDirUI(site, "image");
+  await refreshSiteDirUI(site, "video");
 }
 
-function saveWeibo() {
+function saveSite(site) {
   const data = {};
-  for (const k in WEIBO_QUALITY_DEFAULTS) {
+  for (const k in site.quality) {
     const el = document.getElementById(k);
     if (el) data[k] = el.value;
   }
@@ -213,8 +268,10 @@ async function applyLanguage() {
   // 目录显示里的「默认 / 自定义 / 需要重新授权」是运行时拼的，重算一遍
   await refreshDirUI("image");
   await refreshDirUI("video");
-  await refreshWeiboDirUI("image");
-  await refreshWeiboDirUI("video");
+  for (const site of SITE_SECTIONS) {
+    await refreshSiteDirUI(site, "image");
+    await refreshSiteDirUI(site, "video");
+  }
 }
 
 function initLanguage() {
@@ -239,16 +296,25 @@ function bindButtons() {
   document.getElementById("imageReset").addEventListener("click", () => resetFolder("image"));
   document.getElementById("videoReset").addEventListener("click", () => resetFolder("video"));
 
-  document.getElementById("weiboImagePick").addEventListener("click", () => pickWeiboFolder("image"));
-  document.getElementById("weiboVideoPick").addEventListener("click", () => pickWeiboFolder("video"));
-  document.getElementById("weiboImageReauth").addEventListener("click", () => pickWeiboFolder("image"));
-  document.getElementById("weiboVideoReauth").addEventListener("click", () => pickWeiboFolder("video"));
-  document.getElementById("weiboImageReset").addEventListener("click", () => resetWeiboFolder("image"));
-  document.getElementById("weiboVideoReset").addEventListener("click", () => resetWeiboFolder("video"));
+  document.getElementById("weiboImagePick").addEventListener("click", () => pickSiteFolder(siteOf("weibo"), "image"));
+  document.getElementById("weiboVideoPick").addEventListener("click", () => pickSiteFolder(siteOf("weibo"), "video"));
+  document.getElementById("weiboImageReauth").addEventListener("click", () => pickSiteFolder(siteOf("weibo"), "image"));
+  document.getElementById("weiboVideoReauth").addEventListener("click", () => pickSiteFolder(siteOf("weibo"), "video"));
+  document.getElementById("weiboImageReset").addEventListener("click", () => resetSiteFolder(siteOf("weibo"), "image"));
+  document.getElementById("weiboVideoReset").addEventListener("click", () => resetSiteFolder(siteOf("weibo"), "video"));
 
-  // 同一个「保存」按钮：两组设置一起落盘（原有的两个监听器行为不变）
+  document.getElementById("twitterImagePick").addEventListener("click", () => pickSiteFolder(siteOf("twitter"), "image"));
+  document.getElementById("twitterVideoPick").addEventListener("click", () => pickSiteFolder(siteOf("twitter"), "video"));
+  document.getElementById("twitterImageReauth").addEventListener("click", () => pickSiteFolder(siteOf("twitter"), "image"));
+  document.getElementById("twitterVideoReauth").addEventListener("click", () => pickSiteFolder(siteOf("twitter"), "video"));
+  document.getElementById("twitterImageReset").addEventListener("click", () => resetSiteFolder(siteOf("twitter"), "image"));
+  document.getElementById("twitterVideoReset").addEventListener("click", () => resetSiteFolder(siteOf("twitter"), "video"));
+
+  // 同一个「保存」按钮：所有站点的设置一起落盘
   document.getElementById("save").addEventListener("click", save);
-  document.getElementById("save").addEventListener("click", saveWeibo);
+  for (const site of SITE_SECTIONS) {
+    document.getElementById("save").addEventListener("click", () => saveSite(site));
+  }
 }
 
 function boot() {
@@ -265,7 +331,7 @@ function boot() {
   initLanguage();
   bindButtons();
   restore();
-  restoreWeibo();
+  for (const site of SITE_SECTIONS) restoreSite(site);
 }
 
 if (I18N && I18N.ready) I18N.ready.then(boot);

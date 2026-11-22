@@ -172,7 +172,11 @@ function chain(nodes) {
     img.candidates[0],
     "https://wx1.sinaimg.cn/large/006ABCdefgy1h1a2b3c.jpg"
   );
-  check("候选含 1080 兜底", img.candidates.indexOf("https://wx1.sinaimg.cn/orj1080/006ABCdefgy1h1a2b3c.jpg") >= 0, true);
+  check(
+    "默认原图时候选只有原图与原始地址（不塞中间档）",
+    img.candidates.join(","),
+    "https://wx1.sinaimg.cn/large/006ABCdefgy1h1a2b3c.jpg,https://wx1.sinaimg.cn/orj360/006ABCdefgy1h1a2b3c.jpg"
+  );
   check("360→原图", img.variants.large, "https://wx1.sinaimg.cn/large/006ABCdefgy1h1a2b3c.jpg");
   check(
     "头像被排除",
@@ -367,6 +371,74 @@ function chain(nodes) {
   check("重新进入加载态", btn3.classList.contains("wb-dl-progress"), true);
   check("进度重置到起点", btn3.style.getPropertyValue("--wb-dl-p"), "2.0");
   wb._endRing("pidC");
+
+  console.log("== 15. 分辨率：与 ins 同一套档位，取不低于设置的最小一档 ==");
+  const cfgImg = "https://wx1.sinaimg.cn/orj360/006ABCdefgy1h1a2b3c.jpg";
+  const wbImg = (q) => wb.imageCandidates(cfgImg, q).map((u) => u.split("/")[3]);
+  check("设置 240 → orj360（微博最小档）", wbImg("240")[0], "orj360");
+  check("设置 480 → orj480", wbImg("480")[0], "orj480");
+  check("设置 720 → mw1024（不低于 720 的最小档，不擅自升到原图）", wbImg("720")[0], "mw1024");
+  check("设置 1080 → orj1080", wbImg("1080")[0], "orj1080");
+  check("设置 2K → mw2000", wbImg("2k")[0], "mw2000");
+  check("设置 4K → 源最高档（原图）", wbImg("4k")[0], "large");
+  check("设置 原图 → 原图在首位", wbImg("orig")[0], "large");
+  check(
+    "所选档取不到时逐档往上回退（1080 → 2K → 原图）",
+    wbImg("1080").slice(1, 3).join(","),
+    "mw2000,large"
+  );
+  check(
+    "老值 mw690 仍按档位名直出（不做二次折算）",
+    wb.applyImageQuality(cfgImg, "mw690"),
+    "https://wx1.sinaimg.cn/mw690/006ABCdefgy1h1a2b3c.jpg"
+  );
+
+  // 视频：playback_list 自带清晰度标签，按设置挑「不低于设置的最小一档」
+  const playback = {
+    playback_list: [
+      { meta: { quality_label: "1080P" }, play_info: { url: "https://f.video.weibocdn.com/o0/p1080.mp4" } },
+      { meta: { quality_label: "720P" }, play_info: { url: "https://f.video.weibocdn.com/o0/p720.mp4" } },
+      { meta: { quality_label: "480P" }, play_info: { url: "https://f.video.weibocdn.com/o0/p480.mp4" } }
+    ]
+  };
+  const q720 = await wb.videoCandidates(playback, "720");
+  check("设置 720 → 720 档在首位", q720[0], "https://f.video.weibocdn.com/o0/p720.mp4");
+  check("更高的档作为回退排在后面", q720[1], "https://f.video.weibocdn.com/o0/p1080.mp4");
+  check("更低的档排在更高的档之后", q720[2], "https://f.video.weibocdn.com/o0/p480.mp4");
+  check(
+    "原画质 → 源最高档在首位",
+    (await wb.videoCandidates(playback, "orig"))[0],
+    "https://f.video.weibocdn.com/o0/p1080.mp4"
+  );
+  check(
+    "设置 2K 而源最高只有 1080 → 取源最高档",
+    (await wb.videoCandidates(playback, "2k"))[0],
+    "https://f.video.weibocdn.com/o0/p1080.mp4"
+  );
+  check(
+    "判不出档位的地址排最后兜底",
+    (await wb.videoCandidates(Object.assign({ mp4_url: "https://f.video.weibocdn.com/o0/unknown.mp4" }, playback), "720"))[3],
+    "https://f.video.weibocdn.com/o0/unknown.mp4"
+  );
+
+  // 只有老字段（无标签）时，靠字段名自带的高度选档
+  const fieldCands = await wb.videoCandidates(
+    {
+      stream_url: "https://f.video.weibocdn.com/o0/sd.mp4?label=mp4_ld",
+      stream_url_hd: "https://f.video.weibocdn.com/o0/hd.mp4?label=mp4_hd"
+    },
+    "480"
+  );
+  check("标清设置下标清在首位", fieldCands[0], "https://f.video.weibocdn.com/o0/sd.mp4?label=mp4_ld");
+  const onlyHd = await wb.videoCandidates(
+    { stream_url_hd: "https://f.video.weibocdn.com/o0/hd.mp4" },
+    "480"
+  );
+  check(
+    "源只有高清时，标清设置也取它（= 源最高档）",
+    onlyHd[0],
+    "https://f.video.weibocdn.com/o0/hd.mp4"
+  );
 
   console.log("\n结果: " + pass + " 通过 / " + fail + " 失败");
   process.exit(fail ? 1 : 0);

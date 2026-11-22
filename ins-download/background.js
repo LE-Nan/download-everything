@@ -3,9 +3,9 @@
  *  1) 用户选择了自定义文件夹 -> 经 offscreen document 用 File System Access API 写入该文件夹
  *  2) 默认模式 -> chrome.downloads 下载到浏览器下载目录的子文件夹（不询问）
  *
- * 按 site 路由：msg.site === "weibo" 走微博专用逻辑（独立的目录配置与文件名前缀），
- * 其余情况（不传 site 或 site === "ins"）走 ins 逻辑（独立的目录配置与 ins_ 前缀）。
- * 两条链路都先由 offscreen 取回真实字节再交付，因此都支持进度回传与取消；
+ * 按 site 路由：msg.site === "weibo" 走微博专用逻辑、"twitter" 走 X（推特）专用逻辑
+ * （各自独立的目录配置与文件名前缀），其余情况（不传 site 或 site === "ins"）走 ins 逻辑。
+ * 三条链路都先由 offscreen 取回真实字节再交付，因此都支持进度回传与取消；
  * 目录、文件名、请求头仍完全独立，互不干扰。
  */
 
@@ -143,6 +143,7 @@ function downloadViaChrome(url, filename) {
 
 async function handleDownload(msg, sender) {
   if (msg.site === "weibo") return handleWeiboDownload(msg, sender);
+  if (msg.site === "twitter") return handleTwitterDownload(msg, sender);
   const key = msg.type === "video" ? "video" : "image";
   const cfg = await chrome.storage.sync.get([key + "Custom", key + "Dir", key + "DirName"]);
   const ext = msg.type === "video" ? "mp4" : "jpg";
@@ -241,6 +242,7 @@ async function legacyInsDownload(url, key, cfg, name) {
 
 async function handleZip(msg, sender) {
   if (msg.site === "weibo") return handleWeiboZip(msg, sender);
+  if (msg.site === "twitter") return handleTwitterZip(msg, sender);
   const cfg = await chrome.storage.sync.get(["imageCustom", "imageDir"]);
   const zipName = "ins_images_" + timestamp() + ".zip";
   const pid = msg.progressId || null;
@@ -672,6 +674,156 @@ async function handleWeiboApi(msg) {
   return resp || { ok: false, error: "no-response" };
 }
 
+/* ---------------- X（推特）：独立链路 ----------------
+ * 与微博结构一致但完全独立：独立的 storage 键（twitterImageDir / twitterVideoDir /
+ * twitterImageCustom …）、文件名前缀 twitter_、默认目录 twitter-download/。
+ *
+ * 与微博的差别只有一个：twimg 的图床/CDN 不校验 Referer（pbs / video.twimg.com 本来就是
+ * 给第三方 embed 用的），所以不需要 declarativeNetRequest 改请求头，链路更短。
+ */
+const TWITTER_DEFAULT_DIR = {
+  image: "twitter-download/images",
+  video: "twitter-download/videos"
+};
+
+function twitterKeys(type) {
+  const key = type === "video" ? "video" : "image";
+  return { key, prefix: key === "video" ? "twitterVideo" : "twitterImage" };
+}
+
+async function handleTwitterDownload(msg, sender) {
+  const { key, prefix } = twitterKeys(msg.type);
+  const cfg = await chrome.storage.sync.get([prefix + "Custom", prefix + "Dir"]);
+  const suffix = msg.nameSuffix || "";
+  const base = "twitter_" + key + "_" + timestamp() + suffix;
+  const pid = msg.progressId || null;
+  bindProgress(pid, sender);
+
+  if (isCanceled(pid)) {
+    releaseCancel(pid);
+    releaseProgress(pid);
+    return { ok: true, canceled: true };
+  }
+
+  let candidates = Array.isArray(msg.candidates) ? msg.candidates.filter(Boolean) : [];
+  if (!candidates.length && msg.url) candidates = [msg.url];
+  if (!candidates.length) {
+    releaseProgress(pid);
+    return { ok: false, error: "no-candidates" };
+  }
+
+  try {
+    await ensureOffscreen();
+    // 与微博同一条「先取字节」链路：扩展名按真实文件头决定，保存框弹一次，
+    // 进度与取消都靠 progressId 串起来。
+    const saved = await chrome.runtime.sendMessage({
+      target: "offscreen",
+      action: "save-media",
+      candidates,
+      kind: key,
+      fileName: base,
+      progressId: pid,
+      dirKey: cfg[prefix + "Custom"] ? prefix + "DirHandle" : null
+    });
+    if (isCanceled(pid) || (saved && saved.error === "aborted")) {
+      if (saved && saved.url) releaseBlobLater(saved.url);
+      return { ok: true, canceled: true };
+    }
+    if (!saved || !saved.ok) return saved || { ok: false, error: "no-response" };
+    if (saved.saved === "fs") {
+      notifyProgress(pid, { phase: "save" });
+      return { ok: true };
+    }
+
+    const fileName = base + "." + (saved.ext || (key === "video" ? "mp4" : "jpg"));
+    const dir = (cfg[prefix + "Dir"] || TWITTER_DEFAULT_DIR[key]).replace(/^\/+|\/+$/g, "");
+    const resp = await deliverBytes(saved, dir + "/" + fileName, pid);
+    releaseBlobLater(saved.url);
+    return resp;
+  } catch (e) {
+    return { ok: false, error: String(e && e.message ? e.message : e) };
+  } finally {
+    releaseProgress(pid);
+    releaseCancel(pid);
+  }
+}
+
+async function handleTwitterZip(msg, sender) {
+  const items = Array.isArray(msg.items) ? msg.items : [];
+  // 含视频的合集落到视频目录，纯图片落到图片目录
+  const hasVideo = items.some((it) => it.type === "video");
+  const { key, prefix } = twitterKeys(hasVideo ? "video" : "image");
+  const cfg = await chrome.storage.sync.get([prefix + "Custom", prefix + "Dir"]);
+  const zipName = "twitter_" + key + "s_" + timestamp() + ".zip";
+  const pid = msg.progressId || null;
+  bindProgress(pid, sender);
+
+  if (isCanceled(pid)) {
+    releaseCancel(pid);
+    releaseProgress(pid);
+    return { ok: true, canceled: true };
+  }
+
+  try {
+    await ensureOffscreen();
+    const resp = await chrome.runtime.sendMessage({
+      target: "offscreen",
+      action: "zip",
+      items,
+      zipName,
+      prefix: "twitter_",
+      sniffExt: true,
+      progressId: pid,
+      dirKey: cfg[prefix + "Custom"] ? prefix + "DirHandle" : null
+    });
+    if (isCanceled(pid) || (resp && resp.error === "aborted")) {
+      return { ok: true, canceled: true };
+    }
+    if (resp && resp.ok && resp.dataUrl) {
+      const dir = (cfg[prefix + "Dir"] || TWITTER_DEFAULT_DIR[key]).replace(/^\/+|\/+$/g, "");
+      notifyProgress(pid, { phase: "save" });
+      const r = await downloadViaChrome(resp.dataUrl, dir + "/" + zipName);
+      if (!r.ok) return r;
+      activeDownloadIds.set(pid, r.downloadId);
+      if (isCanceled(pid)) {
+        cancelChromeDownload(r.downloadId);
+        return { ok: true, canceled: true };
+      }
+      const end = await watchDownload(r.downloadId);
+      return end && end.canceled ? { ok: true, canceled: true } : end;
+    }
+    if (resp && resp.ok) notifyProgress(pid, { phase: "save" });
+    return resp || { ok: false, error: "no-response" };
+  } catch (e) {
+    return { ok: false, error: String(e && e.message ? e.message : e) };
+  } finally {
+    releaseProgress(pid);
+    releaseCancel(pid);
+  }
+}
+
+/* X 的公开嵌入接口（cdn.syndication.twimg.com/tweet-result）：页面里发会被 CORS 拦，
+ * 由 offscreen 代发。只放行这一个域名，避免变成通用代理。 */
+async function handleXApi(msg) {
+  let url;
+  try {
+    url = new URL(msg.url);
+  } catch (e) {
+    return { ok: false, error: "bad-url" };
+  }
+  if (!/^(cdn\.syndication\.twimg\.com|api\.x\.com|api\.twitter\.com)$/i.test(url.hostname)) {
+    return { ok: false, error: "host-not-allowed" };
+  }
+  await ensureOffscreen();
+  const resp = await chrome.runtime.sendMessage({
+    target: "offscreen",
+    action: "weibo-api", // offscreen 侧只是一个通用 GET 代理，与站点无关
+    url: url.toString(),
+    method: "GET"
+  });
+  return resp || { ok: false, error: "no-response" };
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg) return;
   // offscreen 边下边报的字节数：转给发起下载的那个标签页，画进度环用
@@ -692,13 +844,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
   // 内容脚本在加载中再次点击按钮 = 取消这条下载
-  // action:"cancel" 是新名字（ins 与微博共用），"wb-cancel" 保留兼容旧脚本
+  // action:"cancel" 是新名字（三站共用），"wb-cancel" 保留兼容旧脚本
   if (msg.action === "cancel" || msg.action === "wb-cancel") {
     sendResponse(requestCancel(msg.progressId));
     return;
   }
   if (msg.action === "weibo-api") {
     handleWeiboApi(msg).then(sendResponse);
+    return true;
+  }
+  if (msg.action === "x-api") {
+    handleXApi(msg).then(sendResponse);
     return true;
   }
 });

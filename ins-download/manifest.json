@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "download-everything",
-  "version": "2.2.0",
-  "description": "在 Instagram 与微博网页端的图片/视频动态旁显示下载按钮，一键按设置静默下载，支持轮播全量与打包 zip。界面支持中/英/日/韩。",
+  "version": "3.0.0",
+  "description": "在 Instagram、微博、X（推特）网页端的图片/视频动态旁显示下载按钮，一键按设置静默下载（默认最高画质），支持轮播全量与打包 zip。界面支持中/英/日/韩。",
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
@@ -31,7 +31,10 @@
     "*://*.weibo.cn/*",
     "*://*.sinaimg.cn/*",
     "*://*.weibocdn.com/*",
-    "*://*.weibocdn.cn/*"
+    "*://*.weibocdn.cn/*",
+    "*://*.x.com/*",
+    "*://*.twitter.com/*",
+    "*://*.twimg.com/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -47,6 +50,18 @@
       "matches": ["*://*.weibo.com/*"],
       "js": ["i18n.js", "weibo.js"],
       "css": ["weibo.css"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["*://*.x.com/*", "*://*.twitter.com/*"],
+      "js": ["twitter-hook.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["*://*.x.com/*", "*://*.twitter.com/*"],
+      "js": ["i18n.js", "twitter.js"],
+      "css": ["twitter.css"],
       "run_at": "document_idle"
     }
   ]

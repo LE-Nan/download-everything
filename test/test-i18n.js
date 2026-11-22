@@ -92,15 +92,19 @@ function checkTrue(name, cond, extra) {
     "err.permission", "err.blockedIns", "err.blockedWeibo", "err.allFailed",
     "err.aborted", "err.unknown",
     "menu.single", "menu.allZip", "menu.firstOnly", "menu.allZipWeibo",
+    "btn.title.twitter", "toast.busyOtherTwitter", "err.blockedTwitter", "menu.allZipX",
+    "site.twitter", "popup.openX",
+    "opt.twTitleBefore", "opt.twTitleAfter", "opt.twHint", "opt.twImgHint", "opt.twVideoHint",
     "site.weibo", "popup.openIg", "popup.openWeibo", "popup.openOptions",
     "opt.docTitle", "opt.brand", "nav.storage", "nav.display",
     "opt.igTitleBefore", "opt.igTitleAfter", "opt.wbTitleBefore", "opt.wbTitleAfter",
     "opt.wbHint", "opt.img", "opt.video", "opt.imgDir", "opt.videoDir",
     "opt.pick", "opt.reauth", "opt.reset", "opt.imgDirHint", "opt.videoDirHint",
-    "opt.imgQuality", "opt.imgClarity", "opt.videoQuality", "opt.insVideoHint",
+    "opt.imgQuality", "opt.imgClarity", "opt.videoQuality", "opt.insImgHint", "opt.insVideoHint",
     "opt.wbImgHint", "opt.wbVideoHint", "opt.save", "opt.saved",
     "opt.dirDefault", "opt.dirCustom", "opt.needReauth", "opt.pickedFolder",
-    "q.orig", "q.orj1080", "q.mw690", "q.orj360", "q.hd", "q.sd",
+    "q.orig",
+    "q.vOrig", "q.v480", "q.v720", "q.v1080", "q.v2k",
     "opt.displayTitle", "opt.langSection", "opt.langLabel", "opt.langHint", "opt.version"
   ];
   for (const code of langs) {

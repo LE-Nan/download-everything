@@ -4,16 +4,16 @@
 
 # download everything
 
-**Instagram + 微博 网页端图片 / 视频一键下载 Chrome 扩展**
+**插件支持网页端下载图片和视频** —— Instagram · 微博 · X（推特）三个站点，Chrome 扩展，原图 / 原画质一键静默保存
 
 **中文** ｜ [English](README.en.md) ｜ [日本語](README.ja.md) ｜ [한국어](README.ko.md)
 
-在动态卡片旁注入一个下载按钮，点一下就把原图、原视频静默存到你自己指定的文件夹——不弹另存为、不跳转、不打断浏览。
-两个站点都带**真实字节进度环**，加载中还能再点一次**取消**。设置页与弹窗支持**中 / 英 / 日 / 韩**四种界面语言。
+在动态卡片旁注入一个下载按钮，点一下就把原图、原视频静默存到你自己指定的文件夹——不弹另存为、不跳转、不打断浏览。图片与视频**默认取原图 / 原画质**（微博 `large`、X `name=orig`、Instagram 源素材最高档，视频取源最高码率）。
+三个站点都带**真实字节进度环**，加载中还能再点一次**取消**。设置页与弹窗支持**中 / 英 / 日 / 韩**四种界面语言。
 
 ![Manifest](https://img.shields.io/badge/Manifest-V3-405DE6?style=flat-square)
-![Chrome](https://img.shields.io/badge/Chrome-109%2B-4285F4?style=flat-square&logo=googlechrome&logoColor=white)
-![Version](https://img.shields.io/badge/version-2.2.0-2ECC71?style=flat-square)
+![Chrome](https://img.shields.io/badge/Chrome-111%2B-4285F4?style=flat-square&logo=googlechrome&logoColor=white)
+![Version](https://img.shields.io/badge/version-3.0.0-2ECC71?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey?style=flat-square)
 
 </div>
@@ -26,8 +26,9 @@
 | --- | --- | --- | --- | --- | --- | --- |
 | **Instagram** `instagram.com` | ✅ 含全部轮播项 | ✅ Reels 与视频帖 | ✅ | ✅ | ✅ | ✅ |
 | **微博** `weibo.com` | ✅ 九宫格全部 | ✅ 高清 / 标清 | ✅ | ✅ | ✅ | ✅ |
+| **X（推特）** `x.com` · `twitter.com` | ✅ 含全部四宫格、原图 | ✅ 最高码率 mp4 与 GIF | ✅ | ✅ | ✅ | ✅ |
 
-两个站点的功能实现**完全独立**：独立的 DOM 适配层、独立的取址链路、独立的按钮样式、独立的存储键。任何一个站点的改版或出错都不会影响另一个。
+三个站点的功能实现**完全独立**：独立的 DOM 适配层、独立的取址链路、独立的按钮样式、独立的存储键。任何一个站点的改版或出错都不会影响另一个。
 
 > 扩展的加载目录仍叫 `ins-download`（最初只做 Instagram 时的命名），加载时选这个文件夹即可，不影响功能。
 
@@ -39,19 +40,22 @@ Instagram 网页端没有下载按钮。右键"图片另存为"只能拿到被�
 
 **download everything** 绕开了这两件事：它向站点自己的内部接口要数据，直接拿到该条内容的**全部媒体项**和**每一档清晰度**的真实 CDN 地址，然后按你设置的分辨率下载。
 
+X（推特）的问题又不一样：图片右键拿到的是 `name=small`（680px）缩略图，原图要把地址里的 `name=` 改成 `orig`；视频在时间线里是 HLS/MSE 的 `blob:` 流，`video.src` 取不出来，真正的 mp4 直链只存在于页面自己请求的 GraphQL 响应和官方的嵌入接口里。
+
 ## 功能总览
 
 ### 通用能力
 
 | 能力 | 说明 |
 | --- | --- |
-| 🖼 **图片下载** | 单图、多图轮播、九宫格都支持，按设置的分辨率取档 |
-| 🎬 **视频下载** | 拿到真实 mp4 地址（不是 blob），支持 Reels、视频帖、微博视频 |
+| 🖼 **图片下载** | 单图、多图轮播、九宫格、四宫格都支持，按设置的分辨率取档（默认最高档） |
+| 🎬 **视频下载** | 拿到真实 mp4 地址（不是 blob），支持 Reels、视频帖、微博视频、X 视频与 GIF |
 | 🎠 **轮播 / 九宫格全量** | 一条 10 图的帖子能取到全部 10 项，不受页面懒加载限制（DOM 里通常只渲染 2~3 张） |
 | 📦 **打包 zip** | 多图一键打包为单个 zip，避免连点 10 次"另存为" |
 | 📁 **自定义目录** | 选一次文件夹，之后静默写入，全程零弹窗；图片与视频可分别设目录 |
-| ⚙️ **分辨率可选** | Instagram：240P~4K；微博：360P / 690P / 1080P / 原图 |
-| 🎛 **站点独立开关** | popup 里 Instagram 与微博各自一个开关，互不影响 |
+| ⚙️ **分辨率可选** | 三个站点共用**同一套七档**：**原图（默认）** / 240P / 480P / 720P / 1080P / 2K / 4K。**下载时以设置为准，源素材最高档更低时取源最高档** |
+| 🎚 **清晰度可选** | 三个站点统一五档：**原画质（默认）** / 标清 480P / 高清 720P / 超清 1080P / 超高清 2K，每档对应明确的技术标准，按设置取「不低于该档的最小一档」 |
+| 🎛 **站点独立开关** | popup 里 Instagram、微博、X 各自一个开关，互不影响 |
 | 🧩 **零依赖** | 纯原生 JS，无构建、无 npm，克隆即用 |
 
 ### Instagram 已实现
@@ -59,7 +63,7 @@ Instagram 网页端没有下载按钮。右键"图片另存为"只能拿到被�
 - **按钮注入**：每条信息流 `article` 右侧外部一个圆形按钮，`position: fixed` 跟随卡片，滚动 / 缩放 / 信息流重排时经 `requestAnimationFrame` 批量重定位，不跟丢、不重叠
 - **媒体解析五级降级**：内部接口 → `?__a=1` → embed 页 → 帖子页 HTML → DOM 兜底（详见工作原理）
 - **轮播全量**：接口一次返回全部轮播项，不受懒加载影响
-- **清晰度**：图片按 `image_versions2.candidates` / srcset 挑选最接近所选宽度的档（240P～4K）；视频按 `video_versions` 匹配
+- **清晰度**：图片按 `image_versions2.candidates` / srcset 挑档（原图 = 最大一张；选定档取不低于它的最小一档，240P～4K）；视频按 `video_versions[].width` 按同一规则选档（原画质 / 480P / 720P / 1080P / 2K）
 - **多图菜单**：`下载单张（当前显示）` / `下载多张（全部 N 项，打包 zip）`
 - **字节先行**：由离屏文档取回真实字节再交付，扩展名按真实文件头决定，后缀不会被 CDN 的错误页改掉
 - **下载进度环**：按钮外圈按真实字节顺时针填充（解析阶段按时间缓升，取字节阶段按比例走），与保存框联动
@@ -72,7 +76,7 @@ Instagram 网页端没有下载按钮。右键"图片另存为"只能拿到被�
 - **帖子 id 两条取值**：容器有 `mid` / `data-mid` 直接用；没有就从卡片内的微博链接取 `mblogid`（`/{uid}/{mblogid}`、`/detail/xxx`、`/status/xxx`）
 - **媒体解析**：`/ajax/statuses/show` → 视频组件接口 → DOM 兜底；支持九宫格、图文 + 视频混排（保持用户看到的原始顺序）、转发微博
 - **图片清晰度**：换 `sinaimg.cn` 路径首段（`orj360` / `mw690` / `orj1080` / `large` 原图），取不到的档位自动回退
-- **视频清晰度**：高清 / 标清，直链来自视频组件接口的全部分辨率列表
+- **视频清晰度**：原画质 / 标清 480P / 高清 720P / 超清 1080P / 超高清 2K，直链来自视频组件接口的全部分辨率列表，按 `quality_label`（缺失时退回 `mp4_720p`、`label=mp4_hd` 等线索）判档后按设置排序
 - **字节先行**：由离屏文档取回真实字节再交付，彻底修掉"下载下来是 `.htm`"（详见工作原理）
 - **一键补 Referer**：`declarativeNetRequest` 会话规则给图床 / 视频 CDN 补 `Referer: https://weibo.com/`，只作用于 CDN、不动 weibo.com 本身，规避 403
 - **按钮定位**：与卡片头像垂直居中对齐；头像滑出视口或卡片滑到吸顶导航下方时按钮同步隐藏，不浮在导航栏上；横向自动收进视口
@@ -81,9 +85,23 @@ Instagram 网页端没有下载按钮。右键"图片另存为"只能拿到被�
 - **多图菜单**：`只下载第 1 项` / `全部下载（N 项，打包 zip）`
 - **命名**：`weibo_image_20261119T201500.jpg` / `weibo_video_…mp4` / `weibo_images_….zip`
 
+### X（推特）已实现
+
+- **卡片识别**：最近祖先匹配 `article[data-testid="tweet"]`（另有 `article[role="article"]` 与 `[data-testid="tweet"]` 兜底），只看结构不看当前 `src`，懒加载未触发也能挂上按钮
+- **推文 id 取值**：优先读 `<time>` 所在的时间戳链接（这条推文自己的永久链接），避开引用推文里的 `/status/` 链接；取不到时退回第一个 `/status/` 链接
+- **媒体解析三层降级**：
+  1. **页面自身的 GraphQL 数据**（`twitter-hook.js` 注入 MAIN world 旁听 `fetch` / `XHR` 响应）——视频的全部码率直链、图片的原始地址，一次都在里面，不发额外请求
+  2. **官方嵌入接口** `cdn.syndication.twimg.com/tweet-result`（免登录），页面缓存里没有这条推文时用，经 background → offscreen 代发绕开 CORS
+  3. **DOM 兜底**：图片从 `pbs.twimg.com/media/` 地址换 `name=` 参数；视频只在 `video.src` 是 http(s) 直链时才可用
+- **图片最高画质**：`name=orig`（上传原图，最大档）→ `4096x4096` → `large(2048)` → `medium(1200)` → 页面原地址，取不到的档位在取字节阶段自动跳过
+- **视频最高画质**：按 `video_info.variants` 的 `bitrate` 从高到低排序，默认取最高码率那一档；HLS（`.m3u8`）不是可直接保存的文件，直接跳过；GIF 帖按 mp4 下载
+- **按钮定位**：贴在推文媒体区域（多图九宫格取整块）的右上角，躲开 X 自己的 `···` 菜单与右侧栏；媒体很高时按钮夹在可视区内，顶部被吸顶栏盖住时隐藏
+- **进度环 / 取消 / 多图菜单**：与另外两个站点同一套状态机，文案走同一份 i18n
+- **命名**：`twitter_image_20261122T124000.jpg` / `twitter_video_…mp4` / `twitter_images_….zip`
+
 ### 诊断能力
 
-两个站点都内置了控制台诊断命令（`__wbDl.*` / `[download-everything]` 日志），站点改版后不用读源码就能定位是"没识别到卡片"还是"取址失败"。清单见下面的[调试](#调试)一节。
+三个站点都内置了控制台诊断命令（`__wbDl.*` / `__xdl.*` / `[download-everything]` 日志），站点改版后不用读源码就能定位是"没识别到卡片"还是"取址失败"。清单见下面的[调试](#调试)一节。
 
 ## 安装
 
@@ -96,9 +114,9 @@ Instagram 网页端没有下载按钮。右键"图片另存为"只能拿到被�
 2. 打开 `chrome://extensions`（Edge 为 `edge://extensions`）
 3. 右上角打开 **开发者模式**
 4. 点击 **加载已解压的扩展程序**，选择仓库里的 **`ins-download`** 文件夹
-5. 打开 [instagram.com](https://www.instagram.com) 或 [weibo.com](https://weibo.com)，进入信息流，每条内容旁会出现下载按钮
+5. 打开 [instagram.com](https://www.instagram.com)、[weibo.com](https://weibo.com) 或 [x.com](https://x.com)，进入信息流，每条内容旁会出现下载按钮
 
-> 需要 Chrome 109+（依赖 `chrome.offscreen` 与 File System Access API）。旧版浏览器请参考下面的[降级行为](#降级行为)。
+> 需要 Chrome 111+（依赖 `chrome.offscreen`、File System Access API，以及内容脚本的 `world: "MAIN"`）。旧版浏览器请参考下面的[降级行为](#降级行为)。
 >
 > 扩展使用了 `declarativeNetRequestWithHostAccess` 权限（给微博图床补 Referer，解决视频 403），升级后 Chrome 会提示"需要接受新权限"，重新加载并接受即可。
 
@@ -125,9 +143,21 @@ Instagram 网页端没有下载按钮。右键"图片另存为"只能拿到被�
 
 按钮横向会自动收进视口内，不会飘到右侧栏上。若某条微博没出现按钮，按 F12 在控制台执行 `__wbDl.debug()` 可以看到它为什么没被识别（详见[调试](#调试)）。
 
+### X（推特）
+
+打开 [x.com](https://x.com) 首页、搜索结果或推文详情页，**带图/带视频的推文**会在媒体区域的**右上角**出现一个圆形按钮（悬停转 X 蓝）：
+
+- 单图 / 单视频 / GIF → 直接下载
+- 四宫格 / 多图 → 弹出两个选项：**只下载第 1 项** 或 **全部下载（N 项，打包 zip）**
+- 纯文字推文、只有外链卡片预览的推文不会挂按钮（那类卡片里的图不在推文媒体里）
+- 视频默认下载**最高码率**的 mp4；GIF 帖下载的是 mp4 文件（X 本身就是这么存的）
+- 按钮贴在媒体而不是头像旁，是因为 X 头像正右方就是它自己的 `···` 菜单和 Grok 入口，放那里必然打架
+
+> X 的视频地址来自**页面自己的数据请求**。如果某条推文的取址全部失败（例如刚打开详情页、页面数据还没回来，而嵌入接口也被网络环境挡住），按钮会变红并提示"未找到可下载的媒体地址"——等推文加载完再点一次即可。按 F12 执行 `__xdl.debug()` 能看到它识别到了哪些推文。
+
 ### 下载进度环
 
-视频从点击到弹出保存框通常要 5～15 秒，这段时间以前只有一个半透明状态，看不出在动。现在按钮**外圈就是进度条**（Instagram 与微博同一套）：
+视频从点击到弹出保存框通常要 5～15 秒，这段时间以前只有一个半透明状态，看不出在动。现在按钮**外圈就是进度条**（三个站点同一套）：
 
 ```
 点击 ──▶ 解析媒体（0→12%，按时间缓升）
@@ -161,19 +191,27 @@ Instagram 网页端没有下载按钮。右键"图片另存为"只能拿到被�
 
 | 分栏 | 内容 |
 | --- | --- |
-| **保存位置** | 两个站点的下载目录与清晰度 |
+| **保存位置** | 三个站点的下载目录与清晰度 |
 | **显示设置** | 界面语言（中文 / English / 日本語 / 한국어） |
 
-「保存位置」里按站点分成两块——**Instagram 下载设置** 与 **微博下载设置** 各一张卡片，标题在卡片框外，标题里的站点名可点击跳转；每张卡片内部再分图片、视频两组，四组设置互不影响。当前分栏记在地址栏 hash 里，`options.html#display` 可直达显示设置。
+「保存位置」里按站点分成三块——**Instagram 下载设置**、**微博下载设置**、**X（推特）下载设置** 各一张卡片，标题在卡片框外，标题里的站点名可点击跳转。卡片内部是**一行一项**的三列表格：左边设置名、中间控件（路径框 / 下拉框）、右边功能按钮；三列由整张卡片共享，所以行与行、卡片与卡片之间都是对齐的。每张卡片再分图片、视频两组，六组设置互不影响。
+
+每行只留最短的字段名（`保存位置` / `分辨率` / `清晰度`），较长的解释（目录怎么用、清晰度怎么取）收进字段名的悬浮提示，鼠标移上去就能看到。当前分栏记在地址栏 hash 里，`options.html#display` 可直达显示设置。
 
 | 设置项 | 可选值 | 说明 |
 | --- | --- | --- |
-| Instagram 图片位置 / 分辨率 | 自定义文件夹；240P ~ 4K | 默认 `下载\ins-download\images` |
-| Instagram 视频位置 / 清晰度 | 自定义文件夹；240P ~ 4K | 默认 `下载\ins-download\videos` |
+| Instagram 图片位置 / 分辨率 | 自定义文件夹；原图（默认）/ 240P ~ 4K | 默认 `下载\ins-download\images` |
+| Instagram 视频位置 / 清晰度 | 自定义文件夹；原画质（默认）/ 480P / 720P / 1080P / 2K | 默认 `下载\ins-download\videos` |
 | 微博图片位置 | 自定义文件夹 / 默认 | 默认 `下载\weibo-download\images` |
-| 微博图片清晰度 | 360P / 690P / 1080P / 原图 | 微博按尺寸路径存取，原图不压缩 |
+| 微博图片分辨率 | 原图（默认）/ 240P / 480P / 720P / 1080P / 2K / 4K（与 Instagram 同一套） | 按尺寸路径换档，映射到 `orj360` / `orj480` / `mw690` / `mw1024` / `orj1080` / `mw2000` / `large`（原图） |
 | 微博视频位置 | 自定义文件夹 / 默认 | 默认 `下载\weibo-download\videos` |
-| 微博视频清晰度 | 高清 / 标清 | 微博接口通常只给这两档 |
+| 微博视频清晰度 | 原画质（默认）/ 480P / 720P / 1080P / 2K | 按接口给的清晰度标签选档，判不出档的地址排最后兜底 |
+| X 图片位置 | 自定义文件夹 / 默认 | 默认 `下载\twitter-download\images` |
+| X 图片分辨率 | 原图（默认）/ 240P / 480P / 720P / 1080P / 2K / 4K（与 Instagram 同一套） | 映射到 pbs 的 `small`(680) / `medium`(1200) / `large`(2048) / `4096x4096` / `orig`（原图） |
+| X 视频位置 | 自定义文件夹 / 默认 | 默认 `下载\twitter-download\videos` |
+| X 视频清晰度 | 原画质（默认）/ 480P / 720P / 1080P / 2K | mp4 档只给码率，按码率折算档位（≈360P / 720P / 1080P）后选档 |
+
+**清晰度怎么取**：三个站点共用一条规则——**原图 / 原画质**表示「源素材的最高档」，不做任何降档；选了具体档位（240P / 480P / 720P / 1080P / 2K / 4K）时取**不低于该档的最小一档**；如果这条内容源的**最高档还不如设置**（老帖、小图、单码率视频），就取源能给的**最高档**，不会因为设置过高而失败，也不会退到比源更差的档。改完设置不必刷新页面，下一次点击就按新值取档。
 
 **关于自定义文件夹**：点击"选择文件夹"弹出的系统窗口里挑任意目录，之后所有下载静默写入，不会再有任何确认框。目录句柄存在 IndexedDB 里。
 
@@ -201,6 +239,9 @@ ins-download/                 ← 加载扩展时选这个文件夹
 ├── content.css               Instagram 按钮 / 菜单 / 进度环 / 错误提示条样式
 ├── weibo.js                  微博：同上，但选择器与取址链路完全独立
 ├── weibo.css                 微博按钮 / 菜单 / 进度环样式（.wb-dl-* 前缀，互不覆盖）
+├── twitter.js                X（推特）：同上，三层取址（页面 GraphQL → 嵌入接口 → DOM）
+├── twitter.css               X 按钮 / 菜单 / 进度环样式（.x-dl-* 前缀，互不覆盖）
+├── twitter-hook.js           MAIN world 旁听 X 的 GraphQL 响应，把媒体按推文 id 缓存并回传
 ├── background.js             service worker：按 site 路由下载调度、进度转发、取消、Referer 规则
 ├── offscreen.html            离屏文档（跑 DOM + 跨域 fetch）
 ├── offscreen.js              取字节（可中断）、写盘、打包
@@ -208,7 +249,7 @@ ins-download/                 ← 加载扩展时选这个文件夹
 ├── idb.js                    IndexedDB 助手（存目录句柄）
 ├── i18n.js                   界面语言字典（中 / 英 / 日 / 韩）与切换逻辑
 ├── options.html / options.js 设置页（左侧分栏：保存位置 / 显示设置）
-├── popup.html / popup.js     工具栏弹窗（两个独立开关）
+├── popup.html / popup.js     工具栏弹窗（三个独立开关）
 ├── icons/                    16 / 48 / 128 图标
 └── (仓库根) test/            回归测试，node 直跑，无依赖
 ```
@@ -218,22 +259,22 @@ ins-download/                 ← 加载扩展时选这个文件夹
 ### 整体架构
 
 ```
-┌───────── Instagram 页面 ─────────┐   ┌────────── 微博页面 ──────────┐
-│ content.js（隔离世界）            │   │ weibo.js（隔离世界）          │
-│  ├─ 扫 article                    │   │  ├─ 扫 img/video，向上找卡片  │
-│  ├─ shortcode → media id          │   │  ├─ mid → /ajax/statuses/show │
-│  └─ /api/v1/media/{id}/info/      │   │  └─ DOM 兜底                  │
-└───────────────┬──────────────────┘   └──────────────┬───────────────┘
-                │ 消息带 site: "ins" / "weibo"         │
-                └───────────────┬──────────────────────┘
-┌───────────────────────────────▼──────────────────────────────┐
+┌────── Instagram 页面 ──────┐ ┌──── 微博页面 ────┐ ┌──── X（推特）页面 ────┐
+│ content.js（隔离世界）      │ │ weibo.js（隔离） │ │ twitter.js（隔离世界）  │
+│  ├─ 扫 article              │ │  ├─ 向上找卡片    │ │  ├─ 扫 tweet article   │
+│  ├─ shortcode → media id    │ │  ├─ mid → ajax   │ │  ├─ <time> → tweet id  │
+│  └─ /api/v1/media/{id}/info │ │  └─ DOM 兜底      │ │  └─ hook/嵌入接口/DOM  │
+└─────────────┬───────────────┘ └────────┬─────────┘ └───────────┬───────────┘
+              │ site:"ins"               │ site:"weibo"          │ site:"twitter"
+              └──────────────────┬───────┴───────────────────────┘
+┌────────────────────────────────▼─────────────────────────────┐
 │  background.js（service worker）—— 按 site 路由到独立配置      │
 │   ├─ 有自定义目录 → 转交 offscreen                             │
 │   └─ 无自定义目录 → chrome.downloads（saveAs:false）           │
 │   ＋ 进度转发、取消调度、微博 CDN 的 Referer 规则               │
-└───────────────────────────────┬──────────────────────────────┘
-                                │
-┌───────────────────────────────▼──────────────────────────────┐
+└────────────────────────────────┬─────────────────────────────┘
+                                 │
+┌────────────────────────────────▼─────────────────────────────┐
 │  offscreen.html / offscreen.js（有 DOM、带 host 权限）         │
 │   ├─ 跨域 fetch 媒体（不受 CORS 限制）                         │
 │   ├─ 流式读取 + 进度上报 + AbortController 中断                │
@@ -242,7 +283,7 @@ ins-download/                 ← 加载扩展时选这个文件夹
 └──────────────────────────────────────────────────────────────┘
 ```
 
-两个内容脚本**互不 import、互不共享变量**。background 里只有两行前置判断把微博消息分流出去，Instagram 的原有代码路径逐字未改。
+三个内容脚本**互不 import、互不共享变量**。background 里只有每个 handler 开头的 `if (msg.site === …)` 一行分流，Instagram 的原有代码路径逐字未改。
 
 ### 媒体地址解析：五级降级
 
@@ -339,7 +380,40 @@ content.js / weibo.js 生成 progressId
 
 一个 `progressId` 贯穿全程，取消请求即使**早于**下载请求到达也会被记账（连点两下的场景），任务开始时先查一次，已取消就直接返回。三个环节的取消结果统一归一成 `canceled`，所以上层永远只有"成功 / 取消 / 失败"三种语义。
 
-> 两个站点共用同一条进度通道（消息 type 沿用历史的 `wb-dl-progress`），各自只画自己按钮上的环；`progressId` 前缀不同（`ig…` / `wb…`），旧脚本里的 `wb-cancel` 与新的 `cancel` 都已支持。
+> 三个站点共用同一条进度通道（消息 type 沿用历史的 `wb-dl-progress`），各自只画自己按钮上的环；`progressId` 前缀不同（`ig…` / `wb…` / `x…`），旧脚本里的 `wb-cancel` 与新的 `cancel` 都已支持。
+
+### X（推特）媒体地址解析
+
+X 的难点和微博相反：卡片很好认（`article[data-testid="tweet"]`），**难的是拿不到地址**——视频在播放器里是 MSE 的 `blob:`，图片的 `src` 只给 680px 缩略图。但它有一个别的站点没有的便利：页面自己就是靠 GraphQL 拿数据的，媒体全在里面。
+
+| 优先级 | 手段 | 能拿到什么 |
+| --- | --- | --- |
+| 1 | `twitter-hook.js` 旁听页面的 `fetch` / `XHR`（MAIN world，`document_start`） | `extended_entities.media` 里的全部实体：图片原始地址 + `video_info.variants` 的全部码率 mp4 |
+| 2 | `GET cdn.syndication.twimg.com/tweet-result?id={id}&token={t}` | 同上的 `mediaDetails`（免登录的官方嵌入接口），页面缓存没有时用 |
+| 3 | DOM 兜底 | `[data-testid="tweetPhoto"] img` 的地址；`video.src` 是 http(s) 直链时才可用 |
+
+第 1 层只**旁听不改写**：`fetch` 的返回值、`XHR` 的行为都原样透传，解析放在 side branch 里，异常全部吞掉。命中后按推文 id 存进有上限的 Map（200 条，先进先出），内容脚本用 `window.postMessage` 问、hook 用同样的通道答，跨隔离世界不需要额外权限。
+
+清晰度靠**参数**而不是多份文件：
+
+```
+https://pbs.twimg.com/media/GX1abc?format=jpg&name=small   ← 页面默认给 680
+https://pbs.twimg.com/media/GX1abc?format=jpg&name=large   ← 2048
+https://pbs.twimg.com/media/GX1abc?format=jpg&name=4096x4096
+https://pbs.twimg.com/media/GX1abc?format=jpg&name=orig   ← 上传原图，最大档
+```
+
+视频则是真的有多档文件，`variants` 里每条带 `bitrate`：
+
+```json
+{"bitrate": 632000,  "content_type": "video/mp4",        "url": "…/632.mp4"}
+{"bitrate": 2176000, "content_type": "video/mp4",        "url": "…/2176.mp4"}
+{"content_type": "application/x-mpegURL", "url": "…/pl/xxx.m3u8"}   ← 跳过
+```
+
+按 `bitrate` 从高到低排，默认取第一档；选「标清」就反过来。`.m3u8` 是 HLS 播放列表，不是可保存的文件，因此不参与候选——若某条视频**只有** HLS，会明确报「未找到可下载的媒体地址」，而不是存一个坏文件。
+
+> 与微博不同，`pbs.twimg.com` / `video.twimg.com` 不校验 `Referer`（它们本来就是给第三方 embed 用的），所以 X 这条链路不需要 `declarativeNetRequest` 改请求头。
 
 ### 按钮为什么挂在 body 上
 
@@ -350,18 +424,18 @@ content.js / weibo.js 生成 progressId
 
 最终的方案：按钮挂在 `document.body` 下，`position: fixed` + `z-index: 2147483647`，用 `getBoundingClientRect()` 跟随卡片位置，`scroll` / `resize` / `MutationObserver` 触发时经 `requestAnimationFrame` 批量重定位。按钮放在卡片**右侧外部**，彻底避开卡片内的所有交互元素。
 
-### 两个站点怎么做到互不影响
+### 三个站点怎么做到互不影响
 
-| 隔离维度 | Instagram | 微博 |
-| --- | --- | --- |
-| 内容脚本 | `content.js` | `weibo.js` |
-| 样式前缀 | `.ins-dl-*` | `.wb-dl-*` |
-| 开关存储键 | `enabled` | `weiboEnabled` |
-| 目录存储键 | `imageDir` / `videoDir` / … | `weiboImageDir` / `weiboVideoDir` / … |
-| 文件名前缀 | `ins_image_` / `ins_video_` | `weibo_image_` / `weibo_video_` |
-| 默认目录 | `ins-download/` | `weibo-download/` |
+| 隔离维度 | Instagram | 微博 | X（推特） |
+| --- | --- | --- | --- |
+| 内容脚本 | `content.js` | `weibo.js` | `twitter.js`（+ `twitter-hook.js`） |
+| 样式前缀 | `.ins-dl-*` | `.wb-dl-*` | `.x-dl-*` |
+| 开关存储键 | `enabled` | `weiboEnabled` | `twitterEnabled` |
+| 目录存储键 | `imageDir` / `videoDir` / … | `weiboImageDir` / `weiboVideoDir` / … | `twitterImageDir` / `twitterVideoDir` / … |
+| 文件名前缀 | `ins_image_` / `ins_video_` | `weibo_image_` / `weibo_video_` | `twitter_image_` / `twitter_video_` |
+| 默认目录 | `ins-download/` | `weibo-download/` | `twitter-download/` |
 
-background 里唯一的交汇点是每个 handler 开头的 `if (msg.site === "weibo")` 一行分流。
+background 里唯一的交汇点是每个 handler 开头的 `if (msg.site === …)` 一行分流；进度消息（`wb-dl-progress`）三站共用同一条通道，因为内容脚本各自画自己的环，互不感知。
 
 ## 调试
 
@@ -382,6 +456,12 @@ background 里唯一的交汇点是每个 handler 开头的 `if (msg.site === "w
 | 微博 | `__wbDl.cancel()` | 取消当前下载（等价于在加载中的按钮上再点一次） |
 | 微博 | `__wbDl.occlusion()` | 看当前识别到的吸顶栏底边（按钮低于这条线即隐藏）；返回 0 说明没认出导航容器 |
 | 微博 | `__wbDl.clearCache()` | 清掉接口与视频组件缓存，强制重新请求 |
+| X | `__xdl.debug()` | 打印每条被识别的推文：命中的选择器、推文 id、媒体数 |
+| X | `__xdl.inspect(0)` | 对第 0 条推文跑完整取址链路（hook → 嵌入接口 → DOM），打印候选地址 |
+| X | `__xdl.hook("推文id")` | 只看页面 hook 抓到的原始数据（不发任何网络请求） |
+| X | `__xdl.resolve("推文id")` | 直接调嵌入接口看解析结果 |
+| X | `__xdl.checkImage("图片地址")` | 看图片候选档位与顺序 |
+| X | `__xdl.ring()` / `__xdl.cancel()` / `__xdl.occlusion()` | 进度环状态 / 取消当前下载 / 吸顶栏遮挡线 |
 | 通用 | `chrome://extensions` → 本扩展 → **检查视图 service worker** | 看后台下载调度、取消与 offscreen 的报错 |
 
 微博侧还有 `[weibo download]` 前缀的日志，会打出每条帖子实际取到多少媒体、走了哪条链路。**站点改版时优先看这个**：如果日志里反复出现「接口未取到，改用 DOM 兜底」甚至 `媒体数 0`，改 `weibo.js` 顶部的 `SEL` 或解析函数即可，其余逻辑不用动。
@@ -402,14 +482,17 @@ background 里唯一的交汇点是每个 handler 开头的 `if (msg.site === "w
 8. **微博只覆盖信息流与列表页**。图片查看器浮层（点开大图后的全屏浏览）、视频号独立页、头条文章、私信未接。
 9. **微博转发微博**取的是被转发那条的媒体（部分场景会同时取到转发者自带的配图）。
 10. **保存框弹出瞬间的取消**行为依赖 Chrome 自身对 `downloads.cancel` 的处理，个别版本可能留下一条"已取消"的下载记录（文件不会落盘）。
-11. 站点改版可能导致解析链失效，Instagram 改 `content.js`，微博改 `weibo.js`。
+11. **X 的视频只有 mp4 才下得了**。若某条推文只提供 HLS（`.m3u8`）而没有 mp4 档，会明确报「未找到可下载的媒体地址」，不会存一个不能播的文件。
+12. **X 的引用推文**：卡片里的媒体若来自被引用的推文，接口仍只返回本条推文自己的媒体；只有走到 DOM 兜底时才会把引用里的图算进来。
+13. **X 的 hook 依赖 `world: "MAIN"`**（Chrome 111+）。极少数环境下页面会锁定 `fetch`，此时第 1 层失效，自动退到嵌入接口与 DOM。
+14. 站点改版可能导致解析链失效，Instagram 改 `content.js`，微博改 `weibo.js`，X 改 `twitter.js` 顶部的 `SEL`。
 
 ## 合规与免责
 
 - 本扩展**只读取你自己浏览器里已经渲染出来的公开内容**，不绕过登录、不破解付费内容、不构造批量请求爬取。
 - 下载的内容**版权属于原作者**。请仅用于个人离线查看、备份自己的作品等合理用途，**不要二次分发、商用或搬运**。
-- 使用本扩展可能违反 Instagram、微博的服务条款，**风险自负**。请控制使用频率，不要用于批量采集。
-- 本项目与 Instagram / Meta、微博 / 新浪微博均无任何关联，未获其授权或认可。
+- 使用本扩展可能违反 Instagram、微博、X（推特）的服务条款，**风险自负**。请控制使用频率，不要用于批量采集。
+- 本项目与 Instagram / Meta、微博 / 新浪微博、X / xAI 均无任何关联，未获其授权或认可。
 
 ## 开发
 
@@ -425,24 +508,74 @@ background 里唯一的交汇点是每个 handler 开头的 `if (msg.site === "w
 **回归测试**（Node 18+，无需依赖）：
 
 ```bash
-node test/test-weibo.js       # 卡片识别 / 帖子 id 取值 / 接口解析 / 地址候选 / 加载与取消，55 项断言
-node test/test-content.js     # Instagram 进度环 / 取消状态机 / 按钮形态切换，30 项断言
+node test/test-weibo.js       # 卡片识别 / 帖子 id 取值 / 接口解析 / 地址候选 / 分辨率与清晰度选档 / 加载与取消，72 项断言
+node test/test-content.js     # Instagram 进度环 / 取消状态机 / 按钮形态切换 / 选档钳制，40 项断言
 node test/test-offscreen.js   # 文件头识别 / 候选重试 / 拒绝 HTML / 流式进度 / 中断 / zip，66 项断言
-node test/test-background.js  # 路由隔离 / 字节交付 / 进度回传 / 取消三段式 / 请求头规则，91 项断言
+node test/test-background.js  # 路由隔离 / 字节交付 / 进度回传 / 取消三段式 / 请求头规则，110 项断言
 node test/test-i18n.js        # 四语字典键集 / 占位符 / 切换与通知，43 项断言
+node test/test-twitter.js     # X：推文 id / 图片换档 / 视频选档 / 实体归一化 / 进度环，62 项断言
+node test/test-twitter-hook.js# X hook：GraphQL 解析 / 跨世界问答 / 不改写原请求，14 项断言
 ```
 
-五套都是纯 Node、无依赖、直接跑，合计 285 项断言：
+七套都是纯 Node、无依赖、直接跑，合计 407 项断言：
 
 - `test-background.js` 会分别模拟不带 `site` 的下载（Instagram 路径）和 `site: "weibo"` 的下载，断言目录、前缀、`saveAs` 互不影响——改 background 后跑一遍即可确认没有波及 Instagram；
 - `test-content.js` 只桩按钮与消息这一层，专测 Instagram 的环：解析阶段封顶 12%、按字节比例走并封顶 98、取消后迟到的进度不许再画环；
 - `test-offscreen.js` 专门守住「HTML 错误页被当成图片存成 .htm」这个老 bug：断言下载器拿到的是 `blob:` / `data:` 而不是网络地址，以及中断后不再尝试后续候选；
 - `test-weibo.js` 里的 DOM 桩只实现识别与解析用到的那部分，用最小环境跑真实代码；
 - `test-i18n.js` 断言四种语言的键集完全一致、占位符 `{n}` / `{msg}` / `{name}` / `{path}` 一个不少——少翻一条就会在界面上露出 key 原文或悄悄回落中文。
+- `test-twitter.js` 只桩按钮与消息这一层，专测 X 的三件事：时间戳链接优先（避开引用推文的 id）、`name=` 换档与去重、`variants` 按 `bitrate` 折算档位后按设置选档并跳过 `.m3u8`；
+- `test-twitter-hook.js` 塞一份模仿 `UserTweets` 的深层嵌套响应，断言能翻出「推文 id + 媒体实体」，以及 `fetch` 的返回值原样透传（旁听不改写）。
 
 ## 更新日志
 
-### v2.2.0
+### v3.0.0（2026-11-22）
+
+三个站点合流后的第一个正式版，版本号从 2.3.2 进位到 **3.0.0**：
+
+- **能力定型**：Instagram / 微博 / X（推特）三站的图片、视频、多图打包、进度环、取消、独立目录、独立清晰度全部就位。三站实现互不依赖——独立的 DOM 适配层、独立的取址链路、独立的存储键，任何一个站点改版都只影响它自己
+- **档位统一**：图片七档（原图默认 → 4K）、视频五档（原画质默认 → 2K），三站共用同一套档位标准与同一条选档规则（不低于设置的最小一档）
+- **四语界面**：中 / 英 / 日 / 韩，设置页与工具栏弹窗切换即时生效，网页内按钮的 tooltip、多图菜单、失败提示同步换文案
+- **README 重写**：开篇第一句直接说明「插件支持网页端下载图片和视频」，之后按站点铺开能力与原理；更新日志的每一版标题都补上**上传至仓库的日期**
+- 主版本进位的理由：三站齐备、档位与文案标准统一，功能边界已经稳定，2.x 到此收尾
+
+### v2.3.2（2026-11-22）
+
+把三个站点的**图片分辨率**下拉统一成 Instagram 那套档位，微博与 X 的子选项随之替换：
+
+- **三站同一套七档**：原图（默认，首位）/ 240P / 480P / 720P / 1080P / 2K / 4K
+- 微博：选项值不再直接暴露 `large` / `orj1080` / `mw690` / `orj360`，改由 `weibo.js` 把档位翻译成尺寸路径（`orj360` / `orj480` / `mw690` / `mw1024` / `orj1080` / `mw2000` / `large`），原图 = `large`
+- X：选项值不再暴露 `4096x4096` / `large` / `medium` / `small`，改由 `twitter.js` 翻译成 pbs 的 `name`（`small` 680 / `medium` 1200 / `large` 2048 / `4096x4096` / `orig`），原图 = `orig`
+- **选档规则与 ins 一致**：取不低于设置的最小一档，源图最高档更低时落到原图；所选档取不到就逐档往上回退
+- **老配置就地迁移**：存过 `large` / `mw690` 或 `4096x4096` / `medium` 等旧值，设置页按实际宽度折算到新档，下拉不会空白，下载端也保留档位名直出
+- 四语词典删掉不再使用的 `q.orj1080` / `q.mw690` / `q.orj360` / `q.xOrig` / `q.x4096` / `q.xLarge` / `q.xMedium` / `q.xSmall`，微博与 X 的分辨率提示改成「三站共用一套档位」
+- 测试：`test-weibo.js` 68 → 72、`test-twitter.js` 56 → 62，合计 397 → **407 项**
+
+### v2.3.1（2026-11-22）
+
+设置页的分辨率 / 清晰度按统一标准重排，并让每个选项真正落到下载链路：
+
+- **分辨率默认「原图」并置于首位**：Instagram 新增 `orig` 档（取 `image_versions2.candidates` / srcset 里最大一张）；微博（`large`）、X（`orig`）本来就是原图，这两处的选项与顺序未动
+- **清晰度统一为五档**：**原画质（默认）** / 标清 480P / 高清 720P / 超清 1080P / 超高清 2K，三个站点完全一致；Instagram 视频不再提供 240P / 4K，微博与 X 原来的「高清 / 标清」并入新档位
+- **每个档位对应明确的技术标准**：Instagram 按 `video_versions[].width`；微博按 `playback_list` 的清晰度标签（`quality_label` 等，缺失时退回字段名与 URL 里的 `mp4_720p` / `label=mp4_hd` 线索）；X 的 mp4 只给码率，按码率折算档位。三者统一取「不低于设置的最小一档」，源最高档更低时取最高档，原画质直接取源最高档
+- **老值自动折算**：存过 `hd` / `sd` / `240` / `4k` 的配置会被就地映射到新档位，设置页不会出现空白下拉框，下载也不会因为取不到档而失败
+- 四语文案补齐（新增 `q.vOrig` / `q.v480` / `q.v720` / `q.v1080` / `q.v2k`，移除 `q.hd` / `q.sd`），视频清晰度的悬浮提示补上「原画质＝源最高档」
+- 测试：`test-weibo.js` 61 → 68、`test-content.js` 36 → 40、`test-twitter.js` 54 → 56，合计 384 → **397 项**
+
+### v2.3.0（2026-11-22）
+
+新增 **X（推特）网页端图片 / 视频下载**，架构与 ins、微博完全一致但实现独立：
+
+- 新增 `twitter.js` / `twitter.css` / `twitter-hook.js`：卡片识别、三层取址、按钮 / 菜单 / 进度环 / 取消，样式用 `.x-dl-*` 前缀隔离
+- **默认最高画质**：图片 `name=orig`（上传原图），视频按 `bitrate` 取最高档 mp4；GIF 帖按 mp4 下载；HLS（`.m3u8`）不当文件下载
+- `twitter-hook.js` 以 `world: "MAIN"` 注入、`document_start` 执行，旁听页面自身的 GraphQL 响应，把媒体按推文 id 缓存（上限 200 条），内容脚本用 `window.postMessage` 取用；**只旁听不改写**，异常全部吞掉
+- 第二层用官方嵌入接口 `cdn.syndication.twimg.com/tweet-result`，由 background → offscreen 代发绕开 CORS；`x-api` 代理只放行这一个域名
+- background 增加 `site: "twitter"` 路由与 `handleTwitterDownload` / `handleTwitterZip`：独立目录 `twitter-download/`、独立前缀 `twitter_`、独立存储键 `twitterImage*` / `twitterVideo*`
+- 设置页新增第三张卡片（图片 / 视频目录与清晰度，默认 orig / 高清）；工具栏弹窗新增 X 开关；四语文案同步补齐
+- `manifest` 增加 `x.com` / `twitter.com` / `*.twimg.com` 的 host 权限与内容脚本，版本 2.2.0 → **2.3.0**，最低 Chrome 111+
+- 新增 `test-twitter.js`（49 → 54 项）与 `test-twitter-hook.js`（14 项），`test-background.js` 补 X 路由（91 → 110 项），合计 285 → **384 项**
+
+### v2.2.0（2026-11-20）
 
 设置页改成 Chrome 设置那样的左右分栏，并给整个界面加了四语切换：
 
@@ -453,7 +586,7 @@ node test/test-i18n.js        # 四语字典键集 / 占位符 / 切换与通知
 - 扩展版本 2.1.0 → **2.2.0**，`manifest.description` 补一句界面语言
 - 新增 `test/test-i18n.js`（43 项），回归测试 242 → **285 项**
 
-### v2.1.0
+### v2.1.0（2026-11-20）
 
 把微博那套「进度可见 + 随时能退」补到 Instagram，并给 README 上了中/英/日/韩四语：
 
@@ -465,7 +598,7 @@ node test/test-i18n.js        # 四语字典键集 / 占位符 / 切换与通知
 - 回归测试 202 → **242 项**（新增 `test/test-content.js` 30 项，`test/test-background.js` 81 → 91 项）
 - README 增加 English / 日本語 / 한국어 三个版本，顶部语言切换
 
-### v2.0.1
+### v2.0.1（2026-11-20）
 
 一次纯界面/命名整理，下载逻辑零改动：
 
@@ -474,7 +607,7 @@ node test/test-i18n.js        # 四语字典键集 / 占位符 / 切换与通知
 - 设置页：Instagram 与微博的**站点标题都移到卡片框外**、字号统一，标题括号内的站点名为可点击链接；Instagram 的图片 / 视频设置同处一张卡片内
 - 加载目录仍叫 `ins-download`，默认下载子目录（`下载\ins-download\*`、`下载\weibo-download\*`）与存储键全部不变，已有设置与已下载文件不受影响
 
-### v2.0.0
+### v2.0.0（2026-11-19）
 
 一次"定名 + 归档"的版本：功能与 v1.3.1 完全一致，把项目名与版本号对齐到它现在的实际范围。
 
@@ -483,7 +616,7 @@ node test/test-i18n.js        # 四语字典键集 / 占位符 / 切换与通知
 - README 重写：按站点列出**全部已实现能力**（识别 / 取址 / 清晰度 / 全量 / 打包 / 目录 / 进度环 / 取消 / 诊断），补齐进度环与取消的数据链路说明，修正"设置页分三块"等过时描述
 - 代码零改动（`content.js` / `content.css` 依旧逐字未变）
 
-### v1.3.1
+### v1.3.1（2026-11-19）
 
 给加载过程补上「退出键」。Instagram 逻辑依旧零改动：
 
@@ -496,7 +629,7 @@ node test/test-i18n.js        # 四语字典键集 / 占位符 / 切换与通知
 - `__wbDl.cancel()` 可在控制台手动取消当前下载
 - 测试扩到 202 项断言（55 / 66 / 81）
 
-### v1.3.0
+### v1.3.0（2026-11-19）
 
 微博侧的体验补完，Instagram 逻辑依旧零改动：
 
@@ -507,7 +640,7 @@ node test/test-i18n.js        # 四语字典键集 / 占位符 / 切换与通知
 - 多图打包也走同一套进度环（按已处理项数推进）
 - 测试扩到 148 项断言（34 / 50 / 64）
 
-### v1.2.1
+### v1.2.1（2026-11-19）
 
 修实测暴露的两个残留问题，Instagram 逻辑依旧零改动：
 
@@ -519,7 +652,7 @@ node test/test-i18n.js        # 四语字典键集 / 占位符 / 切换与通知
 - 下载启动后短暂盯一下状态：blob URL 被浏览器**异步**中断（不走回调报错）时同样自动回退 `dataUrl`，不会出现「按钮变绿但文件是坏的」
 - 测试 123 项断言（34 / 40 / 49）
 
-### v1.2.0
+### v1.2.0（2026-11-19）
 
 修复微博侧两个实际 bug，Instagram 逻辑零改动：
 
@@ -530,7 +663,7 @@ node test/test-i18n.js        # 四语字典键集 / 占位符 / 切换与通知
 - 图片默认清晰度改为「原图」——微博并非每张图都有 1080 档，之前默认值反而容易取不到
 - 新增 `__wbDl.inspect()` 诊断；测试从 38 项扩到 98 项
 
-### v1.1.0
+### v1.1.0（2026-11-19）
 
 新增微博（weibo.com）支持，Instagram 功能逐字未改：
 
@@ -542,7 +675,7 @@ node test/test-i18n.js        # 四语字典键集 / 占位符 / 切换与通知
 - 设置页新增微博区块，popup 新增微博开关（`weiboEnabled`，与 Instagram 的 `enabled` 互不影响）
 - 新增 `__wbDl` 诊断命令，便于站点改版后定位问题
 
-### v1.0.0
+### v1.0.0（2026-11-09）
 
 首个完整版本，历经 9 轮迭代：
 

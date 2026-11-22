@@ -4,16 +4,17 @@
 
 # download everything
 
-**One-click image / video downloader for Instagram and Weibo on the web**
+**Download images and videos from websites** — a Chrome extension for Instagram, Weibo and X (Twitter) that saves the original image / source-best video in one silent click
 
 [中文](README.md) ｜ **English** ｜ [日本語](README.ja.md) ｜ [한국어](README.ko.md)
 
 A round download button is injected next to every feed card. One click saves the original image or video silently into the folder you chose — no "Save as" dialog, no redirects, no interruption.
-Both sites show a **real-byte progress ring**, and clicking again while loading **cancels** the download. The settings page and popup are available in **Chinese / English / Japanese / Korean**.
+Images and videos are saved as the **original / source-best** by default (Weibo `large`, X `name=orig`, Instagram's largest tier, and the highest-bitrate mp4 for video).
+All three sites show a **real-byte progress ring**, and clicking again while loading **cancels** the download. The settings page and popup are available in **Chinese / English / Japanese / Korean**.
 
 ![Manifest](https://img.shields.io/badge/Manifest-V3-405DE6?style=flat-square)
-![Chrome](https://img.shields.io/badge/Chrome-109%2B-4285F4?style=flat-square&logo=googlechrome&logoColor=white)
-![Version](https://img.shields.io/badge/version-2.2.0-2ECC71?style=flat-square)
+![Chrome](https://img.shields.io/badge/Chrome-111%2B-4285F4?style=flat-square&logo=googlechrome&logoColor=white)
+![Version](https://img.shields.io/badge/version-3.0.0-2ECC71?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey?style=flat-square)
 
 </div>
@@ -25,9 +26,10 @@ Both sites show a **real-byte progress ring**, and clicking again while loading 
 | Site | Images | Video | Multi-item zip | Progress ring | Cancel | Per-site folder / quality |
 | --- | --- | --- | --- | --- | --- | --- |
 | **Instagram** `instagram.com` | ✅ incl. all carousel items | ✅ Reels and video posts | ✅ | ✅ | ✅ | ✅ |
-| **Weibo** `weibo.com` | ✅ all grid images | ✅ HD / SD | ✅ | ✅ | ✅ | ✅ |
+| **Weibo** `weibo.com` | ✅ all grid images | ✅ original + 480P–2K | ✅ | ✅ | ✅ | ✅ |
+| **X (Twitter)** `x.com` · `twitter.com` | ✅ all grid images, originals | ✅ highest-bitrate mp4 and GIFs | ✅ | ✅ | ✅ | ✅ |
 
-The two sites are implemented **completely independently**: separate DOM adapters, separate URL-resolution chains, separate button styles, separate storage keys. A redesign or a bug on one site cannot affect the other.
+The three sites are implemented **completely independently**: separate DOM adapters, separate URL-resolution chains, separate button styles, separate storage keys. A redesign or a bug on one site cannot affect the other.
 
 > The extension still loads from a folder named `ins-download` (a leftover from when it only handled Instagram). Pick that folder when loading — the name has no effect on behaviour.
 
@@ -50,7 +52,8 @@ Weibo is a different story: images can be saved with the context menu, but you g
 | 🎠 **Full carousel / grid** | A 10-image post yields all 10 items, independent of lazy loading (the DOM usually renders only 2–3) |
 | 📦 **Zip packaging** | Bundle everything into one zip instead of clicking "Save as" ten times |
 | 📁 **Custom folder** | Pick a folder once, everything is written silently afterwards; images and videos can use different folders |
-| ⚙️ **Quality selection** | Instagram: 240P–4K; Weibo: 360P / 690P / 1080P / original |
+| ⚙️ **Resolution** | All three sites share **one seven-tier ladder**: **original (default)** / 240P / 480P / 720P / 1080P / 2K / 4K. **Downloads follow your setting; if the source tops out lower, its highest tier is used** |
+| 🎚 **Video quality** | Same five tiers on all three sites: **original (default)** / SD 480P / HD 720P / FHD 1080P / Ultra HD 2K, each mapping to an explicit technical standard |
 | 🎛 **Per-site switches** | Instagram and Weibo have separate toggles in the popup |
 | 🧩 **Zero dependencies** | Plain JS, no build step, no npm — clone and load |
 
@@ -59,7 +62,7 @@ Weibo is a different story: images can be saved with the context menu, but you g
 - **Button injection**: one round button to the **right of** every feed `article`, `position: fixed`, following the card. Scroll / zoom / feed re-layout triggers a batched `requestAnimationFrame` reposition, so it never lags behind or overlaps.
 - **Five-level URL fallback**: internal media API → `?__a=1` → embed page → post page HTML → DOM fallback (see *How it works*).
 - **Full carousel**: the API returns every carousel item at once, so lazy loading is irrelevant.
-- **Quality**: images are picked from `image_versions2.candidates` / `srcset` to the width closest to your setting (240P–4K); videos from `video_versions`.
+- **Quality**: images are picked from `image_versions2.candidates` / `srcset` (original = the largest one; a specific tier = the smallest tier not below it, 240P–4K); videos follow the same rule on `video_versions[].width` (original / 480P / 720P / 1080P / 2K).
 - **Multi-item menu**: `Download this one (current)` / `Download all N items (as zip)`.
 - **Bytes first**: the offscreen document fetches the real bytes and hands them over, so the extension decides the extension from the actual file header — the CDN can no longer rename your file via an error page.
 - **Progress ring**: the button's outer ring fills clockwise with real bytes (time-based ramp while resolving, byte-ratio once downloading), synced with the save dialog.
@@ -72,7 +75,7 @@ Weibo is a different story: images can be saved with the context menu, but you g
 - **Post id, two paths**: use `mid` / `data-mid` if present; otherwise extract `mblogid` from the in-card link (`/{uid}/{mblogid}`, `/detail/xxx`, `/status/xxx`).
 - **Media resolution**: `/ajax/statuses/show` → video component API → DOM fallback; supports nine-grid, text+video mixes (original order preserved) and reposts.
 - **Image quality**: rewrites the first path segment on `sinaimg.cn` (`orj360` / `mw690` / `orj1080` / `large` original); falls back automatically when a tier does not exist.
-- **Video quality**: HD / SD, straight from the component API's resolution list.
+- **Video quality**: original / SD 480P / HD 720P / FHD 1080P / Ultra HD 2K, straight from the component API's resolution list, tiered by `quality_label` (falling back to `mp4_720p` / `label=mp4_hd` hints) before ordering by your setting.
 - **Bytes first**: the offscreen document fetches real bytes before delivery, which permanently fixes the "downloaded file is `.htm`" bug.
 - **Referer injection**: a `declarativeNetRequest` session rule adds `Referer: https://weibo.com/` for the image host and video CDN only (never for `weibo.com` itself) to avoid 403s.
 - **Button placement**: vertically centred on the card avatar; hidden when the avatar leaves the viewport or the card slides under the sticky header, so it never floats over the nav bar; clamped horizontally into the viewport.
@@ -162,16 +165,22 @@ Click the toolbar icon → **Open settings**. The page is a two-column layout (n
 | **Save location** | Download folders and quality for both sites |
 | **Display** | Interface language (Chinese / English / Japanese / Korean) |
 
-"Save location" is split per site — **Instagram download settings** and **Weibo download settings**, one card each, with the site title outside the card frame and clickable inside the parentheses. Each card contains an image group and a video group; the four groups are independent. The active section lives in the URL hash, so `options.html#display` opens Display directly.
+"Save location" is split per site — **Instagram / Weibo / X download settings**, one card each, with the site title outside the card frame and clickable inside the parentheses. Each card is a three-column table with **one setting per row**: name on the left, control (folder box / dropdown) in the middle, action button on the right; the columns are shared by the whole card, so rows and cards line up. Longer explanations (how folders work, how quality is picked) live in the label tooltip. Each card has an image group and a video group, and the groups are independent. The active section lives in the URL hash, so `options.html#display` opens Display directly.
 
 | Setting | Values | Default |
 | --- | --- | --- |
-| Instagram image folder / resolution | custom folder; 240P–4K | `Downloads\ins-download\images` |
-| Instagram video folder / quality | custom folder; 240P–4K | `Downloads\ins-download\videos` |
+| Instagram image folder / resolution | custom folder; original (default) / 240P–4K | `Downloads\ins-download\images` |
+| Instagram video folder / quality | custom folder; original (default) / 480P / 720P / 1080P / 2K | `Downloads\ins-download\videos` |
 | Weibo image folder | custom / default | `Downloads\weibo-download\images` |
-| Weibo image quality | 360P / 690P / 1080P / original | size-based path, original is uncompressed |
+| Weibo image resolution | original (default) / 240P / 480P / 720P / 1080P / 2K / 4K (same ladder as Instagram) | swapped in the URL path, mapped to `orj360` / `orj480` / `mw690` / `mw1024` / `orj1080` / `mw2000` / `large` (original) |
 | Weibo video folder | custom / default | `Downloads\weibo-download\videos` |
-| Weibo video quality | HD / SD | Weibo's API usually offers only these two |
+| Weibo video quality | original (default) / 480P / 720P / 1080P / 2K | tiered by the API's quality label; unlabelled URLs come last as a fallback |
+| X image folder | custom / default | `Downloads\twitter-download\images` |
+| X image resolution | original (default) / 240P / 480P / 720P / 1080P / 2K / 4K (same ladder as Instagram) | mapped onto pbs `name`: `small` (680) / `medium` (1200) / `large` (2048) / `4096x4096` / `orig` (original) |
+| X video folder | custom / default | `Downloads\twitter-download\videos` |
+| X video quality | original (default) / 480P / 720P / 1080P / 2K | mp4 variants only carry a bitrate, so it is mapped to a tier (≈360P / 720P / 1080P) before selection |
+
+**How quality is chosen**: all sites follow one rule — **original** means "the source's best tier" with no downscaling; picking a concrete tier (480P / 720P / 1080P / 2K) takes the **smallest tier not below it**; if that piece of media tops out below your setting (old posts, small images, single-bitrate videos), its highest available version is used instead. No refresh needed: the next click picks up the new value.
 
 **About custom folders**: the system picker lets you choose any directory; afterwards every download is written silently, with no confirmation dialog. The directory handle is kept in IndexedDB.
 
@@ -349,20 +358,23 @@ No build step. After editing, click the **refresh** icon on the extension card i
 
 - Instagram content script → page DevTools Console (isolated world, `[download-everything]` logs)
 - Weibo content script → same, plus `__wbDl.*` commands
+- X content script → same, plus `__xdl.*` commands (`twitter-hook.js` logs nothing by default)
 - service worker → `chrome://extensions` → this extension → **Inspect views: service worker**
 - offscreen → **Inspect views: offscreen.html**
 
 **Regression tests** (Node 18+, no dependencies):
 
 ```bash
-node test/test-weibo.js       # card detection / post id / API parsing / candidates / loading & cancel — 55 assertions
-node test/test-content.js     # Instagram progress ring / cancel state machine / button states — 30 assertions
+node test/test-weibo.js       # card detection / post id / API parsing / candidates / resolution & quality tiers / loading & cancel — 72 assertions
+node test/test-content.js     # Instagram progress ring / cancel state machine / button states / tier picking — 40 assertions
 node test/test-offscreen.js   # header sniffing / candidate retries / HTML rejection / streaming progress / abort / zip — 66 assertions
-node test/test-background.js  # routing isolation / byte delivery / progress relay / three-stage cancel / header rule — 91 assertions
+node test/test-background.js  # routing isolation / byte delivery / progress relay / three-stage cancel / header rule — 110 assertions
 node test/test-i18n.js        # four-language key sets / placeholders / switching and notify — 43 assertions
+node test/test-twitter.js     # X: tweet id / image tiers / video tier picking / normalising / ring — 62 assertions
+node test/test-twitter-hook.js# X hook: GraphQL parsing / cross-world Q&A / untouched responses — 14 assertions
 ```
 
-Five plain-Node suites, 285 assertions in total:
+Seven plain-Node suites, 407 assertions in total:
 
 - `test-background.js` simulates both a download without `site` (Instagram path) and `site: "weibo"`, asserting folders, prefixes and `saveAs` never cross over — run it after touching background to confirm Instagram is unaffected;
 - `test-content.js` stubs only the button and messaging layer and focuses on the Instagram ring: 12% cap while resolving, byte-ratio up to 98, and late progress must not repaint a cancelled ring;
@@ -372,7 +384,53 @@ Five plain-Node suites, 285 assertions in total:
 
 ## Changelog
 
-### v2.2.0
+### v3.0.0 (2026-11-22)
+
+The first stable release with all three sites merged; the version moves from 2.3.2 to **3.0.0**:
+
+- **Scope settled**: images, videos, multi-image zip, progress ring, cancel, per-site folders and per-site quality are all in place for Instagram, Weibo and X (Twitter). The three implementations are independent — separate DOM adapters, separate URL resolution, separate storage keys — so a redesign on one site only affects that site
+- **One ladder everywhere**: seven image tiers (original by default → 4K) and five video tiers (source-best by default → 2K), with the same tier standard and the same picking rule on all three sites (the smallest tier not below your setting)
+- **Four UI languages**: Chinese / English / Japanese / Korean, switching instantly in the settings page and popup, with in-page button tooltips, multi-image menus and failure messages updated in place
+- **README rewritten**: the first line now states plainly that the extension downloads images and videos from the web, then walks through each site; every changelog entry carries its **publish date to the repository**
+- Why the major bump: three sites, one standard for tiers and copy — the feature boundary is stable, so the 2.x line closes here
+
+### v2.3.2(2026-11-22)
+
+The **image resolution** dropdown now uses Instagram's ladder on all three sites, so Weibo and X got new sub-options:
+
+- **One seven-tier ladder everywhere**: original (default, first) / 240P / 480P / 720P / 1080P / 2K / 4K
+- Weibo: option values no longer expose `large` / `orj1080` / `mw690` / `orj360`; `weibo.js` translates a tier into the size path (`orj360` / `orj480` / `mw690` / `mw1024` / `orj1080` / `mw2000` / `large`), original = `large`
+- X: option values no longer expose `4096x4096` / `large` / `medium` / `small`; `twitter.js` translates a tier into pbs `name` (`small` 680 / `medium` 1200 / `large` 2048 / `4096x4096` / `orig`), original = `orig`
+- **Same picking rule as Instagram**: the smallest tier not below your setting, falling back to the source maximum, and walking upwards when the chosen tier does not exist
+- **Legacy values migrate in place**: stored `large` / `mw690` / `4096x4096` / `medium` are folded onto the new tiers, so no blank dropdown and no failed download
+- Four languages updated (dropped `q.orj1080` / `q.mw690` / `q.orj360` / `q.xOrig` / `q.x4096` / `q.xLarge` / `q.xMedium` / `q.xSmall`); Weibo and X image tooltips now say "one shared ladder"
+- Tests: `test-weibo.js` 68 → 72, `test-twitter.js` 56 → 62; total 397 → **407 assertions**
+
+### v2.3.1(2026-11-22)
+
+The resolution / quality dropdowns were re-aligned to one standard, and every option now really drives the download chain:
+
+- **Resolution defaults to "original" and sits first**: Instagram gains an `orig` tier (the largest item in `image_versions2.candidates` / `srcset`); Weibo (`large`) and X (`orig`) were already original, so their options and order are untouched
+- **Video quality is now five tiers everywhere**: **original (default)** / SD 480P / HD 720P / FHD 1080P / Ultra HD 2K; Instagram video drops 240P / 4K, and Weibo's and X's old HD / SD fold into the new ladder
+- **Each tier maps to an explicit technical standard**: Instagram uses `video_versions[].width`; Weibo uses the `playback_list` quality label (`quality_label` and friends, falling back to `mp4_720p` / `label=mp4_hd` hints); X's mp4 variants only carry a bitrate, which is mapped to a tier. All three take "the smallest tier not below the setting", fall back to the source maximum, and `original` always means the source maximum
+- **Legacy values are migrated**: stored `hd` / `sd` / `240` / `4k` map onto the new tiers, so the options page never shows an empty dropdown and downloads never fail on a missing tier
+- All four languages updated (new `q.vOrig` / `q.v480` / `q.v720` / `q.v1080` / `q.v2k`, removed `q.hd` / `q.sd`); video quality tooltips now say "original = the source's best"
+- Tests: `test-weibo.js` 61 → 68, `test-content.js` 36 → 40, `test-twitter.js` 54 → 56; total 384 → **397 assertions**
+
+### v2.3.0(2026-11-22)
+
+X (Twitter) image / video download, built the same way as Instagram and Weibo but fully independent:
+
+- New `twitter.js` / `twitter.css` / `twitter-hook.js`: tweet detection, three-tier URL resolution, button / menu / progress ring / cancel, isolated `.x-dl-*` styles
+- **Highest quality by default**: images use `name=orig` (the uploaded original), videos use the highest-bitrate mp4 (`video_info.variants` sorted by `bitrate`); GIF posts download as mp4; HLS (`.m3u8`) is never saved as a file
+- `twitter-hook.js` runs in `world: "MAIN"` at `document_start` and listens to the page's own GraphQL responses, caching media per tweet id (max 200). Content script queries it over `window.postMessage`. Listen-only — responses are never modified
+- Second tier: official embed endpoint `cdn.syndication.twimg.com/tweet-result`, proxied through background → offscreen to dodge CORS; the `x-api` proxy only allows that one host
+- background gains `site: "twitter"` routing: own folder `twitter-download/`, own prefix `twitter_`, own storage keys
+- Settings page gets a third card (folders + quality, defaults `orig` / HD), popup gets an X toggle, all four UI languages updated
+- Manifest adds `x.com` / `twitter.com` / `*.twimg.com` host permissions and content scripts; version 2.2.0 → **2.3.0**, minimum Chrome 111+
+- New tests: `test-twitter.js` (54) and `test-twitter-hook.js` (14); background X routing added (91 → 110). Total 285 → **384 assertions**
+
+### v2.2.0(2026-11-20)
 
 The settings page now uses Chrome-settings-style two-column navigation, and the whole UI speaks four languages:
 
@@ -383,7 +441,7 @@ The settings page now uses Chrome-settings-style two-column navigation, and the 
 - Extension version 2.1.0 → **2.2.0**, `manifest.description` mentions the languages
 - New `test/test-i18n.js` (43 assertions); regression tests 242 → **285**
 
-### v2.1.0
+### v2.1.0(2026-11-20)
 
 Brings Weibo's "visible progress + always cancellable" experience to Instagram, plus this README in four languages:
 
@@ -395,7 +453,7 @@ Brings Weibo's "visible progress + always cancellable" experience to Instagram, 
 - Regression tests 202 → **242** (new `test/test-content.js` with 30, `test-background.js` 81 → 91).
 - README added in English / 日本語 / 한국어 with a language switcher.
 
-### v2.0.1
+### v2.0.1(2026-11-20)
 
 A UI and naming cleanup; download logic unchanged:
 
@@ -404,7 +462,7 @@ A UI and naming cleanup; download logic unchanged:
 - Settings page: both site titles moved **outside** the card frame at the same size, with the site name in parentheses clickable; Instagram's image and video groups share one card
 - Load folder, default subfolders (`Downloads\ins-download\*`, `Downloads\weibo-download\*`) and all storage keys unchanged — existing settings and files unaffected
 
-### v2.0.0
+### v2.0.0(2026-11-19)
 
 Naming and archiving release: identical functionality to v1.3.1, aligning the project name and major version with its actual scope.
 
@@ -413,7 +471,7 @@ Naming and archiving release: identical functionality to v1.3.1, aligning the pr
 - README rewritten per site, documenting every implemented capability and the progress/cancel data path
 - No code changes (`content.js` / `content.css` untouched)
 
-### v1.3.1
+### v1.3.1(2026-11-19)
 
 Added an "escape hatch" to the loading phase; Instagram untouched:
 

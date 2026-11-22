@@ -1,0 +1,158 @@
+/* X（推特）下载按钮：独立样式，与 ins 的 .ins-dl-* / 微博的 .wb-dl-* 完全隔离
+ * 按钮挂在 body 下用 fixed 定位，跟在媒体区域右上角，避免被 X 的图片查看层 /
+ * 播放器遮罩挡住，也不会和 X 自己的「···」菜单撞位置。 */
+.x-dl-btn {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 2147483647;
+  width: 34px;
+  height: 34px;
+  border: none;
+  border-radius: 50%;
+  /* X 的媒体是圆角矩形，深色半透明底在任何图片上都够清楚 */
+  background: rgba(0, 0, 0, 0.62);
+  color: #fff;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  margin: 0;
+  pointer-events: auto;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+  transition: background 0.15s ease, transform 0.15s ease;
+  /* 进度百分比，由 twitter.js 写入 */
+  --x-dl-p: 0;
+}
+.x-dl-btn:hover {
+  background: #1d9bf0;
+  transform: scale(1.08);
+}
+.x-dl-btn svg {
+  width: 18px;
+  height: 18px;
+  pointer-events: none;
+  /* 提到进度层之上，图标始终清晰 */
+  position: relative;
+  z-index: 2;
+}
+/* 两个图标只显示一个：平时是下载箭头，下载中换成停止方块 —— 提示「再点一次取消」 */
+.x-dl-btn .x-dl-ico-stop {
+  display: none;
+}
+.x-dl-btn.x-dl-progress .x-dl-ico-dl {
+  display: none;
+}
+.x-dl-btn.x-dl-progress .x-dl-ico-stop {
+  display: block;
+  width: 15px;
+  height: 15px;
+}
+.x-dl-btn.x-dl-done {
+  background: #00ba7c;
+}
+.x-dl-btn.x-dl-error {
+  background: #f4212e;
+}
+.x-dl-btn.x-dl-canceled {
+  background: #536471;
+}
+
+/* 下载进度：按钮背景按百分比顺时针填充，已加载部分绿色、未加载留空。
+ * 两层叠加：
+ *   ::before  扇形底色（柔和绿），让"背景"整体跟着进度走
+ *   ::after   外圈实色圆环，精确标出当前百分比
+ * 图标用 z-index 提到两层之上，始终清晰可读。 */
+.x-dl-btn::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: conic-gradient(
+    rgba(0, 186, 124, 0.45) calc(var(--x-dl-p, 0) * 1%),
+    transparent 0
+  );
+  opacity: 0;
+  transition: opacity 0.16s ease;
+  pointer-events: none;
+}
+.x-dl-btn::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: conic-gradient(#00ba7c calc(var(--x-dl-p, 0) * 1%), transparent 0);
+  -webkit-mask: radial-gradient(
+    farthest-side,
+    transparent calc(100% - 3.5px),
+    #000 calc(100% - 3.5px)
+  );
+  mask: radial-gradient(farthest-side, transparent calc(100% - 3.5px), #000 calc(100% - 3.5px));
+  opacity: 0;
+  transition: opacity 0.16s ease;
+  pointer-events: none;
+}
+.x-dl-btn.x-dl-progress::before,
+.x-dl-btn.x-dl-progress::after {
+  opacity: 1;
+}
+.x-dl-btn.x-dl-progress {
+  background: rgba(0, 0, 0, 0.78);
+  /* 加载中按钮仍可点（再点一次 = 取消），所以不能是 progress 光标 */
+  cursor: pointer;
+}
+/* 悬停给出「这一下是取消」的信号：底色转红 */
+.x-dl-btn.x-dl-progress:hover {
+  background: rgba(244, 33, 46, 0.92);
+  transform: none;
+}
+
+/* 多图选择菜单 */
+.x-dl-menu {
+  position: fixed;
+  z-index: 2147483647;
+  min-width: 200px;
+  background: #000;
+  border: 1px solid #2f3336;
+  border-radius: 12px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+  font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+}
+.x-dl-menu-item {
+  display: block;
+  width: 100%;
+  padding: 11px 14px;
+  border: none;
+  background: transparent;
+  color: #e7e9ea;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.x-dl-menu-item:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* 错误提示条 */
+.x-dl-toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2147483647;
+  max-width: 70vw;
+  padding: 10px 16px;
+  background: #f4212e;
+  color: #fff;
+  font-size: 13px;
+  font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  word-break: break-all;
+}
+/* 中性提示（如「已取消下载」）：不用红色，避免看起来像失败 */
+.x-dl-toast.x-dl-toast-info {
+  background: #2f3336;
+}

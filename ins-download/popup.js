@@ -1,4 +1,4 @@
-/* 弹窗：两个站点开关 + 设置入口。
+/* 弹窗：三个站点开关 + 设置入口。
  * 文案全部走 i18n.js，按用户在「显示设置」里选的界面语言渲染。
  */
 const I18N = globalThis.DELi18n || null;
@@ -30,6 +30,17 @@ whenLangReady(() => {
     });
     weiboToggle.addEventListener("change", () => {
       chrome.storage.sync.set({ weiboEnabled: weiboToggle.checked });
+    });
+  }
+
+  // X（推特）开关：同样是独立键 twitterEnabled
+  const twitterToggle = document.getElementById("twitterEnabled");
+  if (twitterToggle) {
+    chrome.storage.sync.get(["twitterEnabled"], (res) => {
+      twitterToggle.checked = res.twitterEnabled !== false;
+    });
+    twitterToggle.addEventListener("change", () => {
+      chrome.storage.sync.set({ twitterEnabled: twitterToggle.checked });
     });
   }
 

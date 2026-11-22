@@ -16,6 +16,7 @@ let storageData = {};
 let onMessage = null;
 let saveResult = null;
 let saveGate = null; // 设置后 save-media 会等它 resolve，便于在「取字节中」插入断言
+let zipResult = null; // 设置后 zip 会回 dataUrl，用于验证打包后的落盘目录
 
 const sandbox = {
   console,
@@ -82,6 +83,11 @@ const sandbox = {
         }
         if (msg && msg.action === "weibo-api") {
           return Promise.resolve({ ok: true, status: 200, text: '{"mblogid":"P1"}' });
+        }
+        // zip 默认只回 ok（旧测试只关心发给 offscreen 的消息）；
+        // 需要验证「打包完成后落到哪个目录」时由用例塞一个 dataUrl
+        if (msg && msg.action === "zip") {
+          return Promise.resolve(zipResult || { ok: true });
         }
         return Promise.resolve({ ok: true });
       }
@@ -441,12 +447,114 @@ const baseName = (filename) => filename.split("/").pop();
   const insZip = offscreenMsgs.find((m) => m.action === "zip");
   check("ins zip 不带 sniffExt", insZip.sniffExt, undefined);
 
+  console.log("== 9b. X（推特）：独立目录、独立前缀 ==");
+  storageData = {};
+  downloads.length = 0;
+  offscreenMsgs.length = 0;
+  r = await send({
+    action: "download",
+    site: "twitter",
+    type: "image",
+    candidates: ["https://pbs.twimg.com/media/GX1?format=jpg&name=orig"]
+  });
+  check("返回 ok", r.ok, true);
+  check("落到 twitter-download/images", dirOf(downloads[0].filename), "twitter-download/images");
+  check("文件名前缀 twitter_image_", baseName(downloads[0].filename).startsWith("twitter_image_"), true);
+  check("同样走取字节链路", offscreenMsgs.filter((m) => m.action === "save-media").length, 1);
+
+  downloads.length = 0;
+  await send({
+    action: "download",
+    site: "twitter",
+    type: "video",
+    candidates: ["https://video.twimg.com/v/2176.mp4"]
+  });
+  check("落到 twitter-download/videos", dirOf(downloads[0].filename), "twitter-download/videos");
+  check("文件名前缀 twitter_video_", baseName(downloads[0].filename).startsWith("twitter_video_"), true);
+
+  console.log("== 9c. X 自定义目录键与微博/ins 互不影响 ==");
+  downloads.length = 0;
+  offscreenMsgs.length = 0;
+  storageData = { twitterImageCustom: true, twitterImageDir: "我的\\X图" };
+  await send({
+    action: "download",
+    site: "twitter",
+    type: "image",
+    candidates: ["https://pbs.twimg.com/media/GX2?format=jpg&name=orig"]
+  });
+  const xSave = offscreenMsgs.find((m) => m.action === "save-media");
+  check("自定义目录走 DirHandle", xSave.dirKey, "twitterImageDirHandle");
+  storageData = { weiboImageCustom: true, weiboImageDir: "我的\\微博" };
+  offscreenMsgs.length = 0;
+  await send({
+    action: "download",
+    site: "twitter",
+    type: "image",
+    candidates: ["https://pbs.twimg.com/media/GX3?format=jpg&name=orig"]
+  });
+  check(
+    "微博的自定义目录不会串到 X 上",
+    offscreenMsgs.find((m) => m.action === "save-media").dirKey,
+    null
+  );
+
+  console.log("== 9d. X zip：命名、目录与扩展名探测 ==");
+  storageData = {};
+  downloads.length = 0;
+  offscreenMsgs.length = 0;
+  zipResult = { ok: true, dataUrl: "data:application/zip;base64,AAAA" };
+  r = await send({
+    action: "zip",
+    site: "twitter",
+    items: [
+      { candidates: ["https://pbs.twimg.com/media/A?format=jpg&name=orig"], type: "image" },
+      { candidates: ["https://pbs.twimg.com/media/B?format=jpg&name=orig"], type: "image" }
+    ]
+  });
+  check("zip 返回 ok", r.ok, true);
+  const xZip = offscreenMsgs.find((m) => m.action === "zip");
+  check("zip 前缀 twitter_", xZip.prefix, "twitter_");
+  check("zip 开启扩展名探测", xZip.sniffExt, true);
+  check("zip 文件名 twitter_images_", baseName(xZip.zipName).startsWith("twitter_images_"), true);
+  check("纯图片落到图片目录", dirOf(downloads[0].filename), "twitter-download/images");
+
+  downloads.length = 0;
+  offscreenMsgs.length = 0;
+  await send({
+    action: "zip",
+    site: "twitter",
+    items: [
+      { candidates: ["https://pbs.twimg.com/media/A?format=jpg&name=orig"], type: "image" },
+      { candidates: ["https://video.twimg.com/v/63.mp4"], type: "video" }
+    ]
+  });
+  check("含视频的 zip 落到视频目录", dirOf(downloads[0].filename), "twitter-download/videos");
+  check(
+    "含视频的 zip 命名 twitter_videos_",
+    baseName(downloads[0].filename).startsWith("twitter_videos_"),
+    true
+  );
+  zipResult = null;
+
   console.log("== 10. 接口代理只转发微博域名 ==");
   r = await send({ action: "weibo-api", url: "https://weibo.com/ajax/statuses/show?id=P1" });
   check("微博接口放行", r.ok, true);
   r = await send({ action: "weibo-api", url: "https://example.com/steal?x=1" });
   check("外部域名被拒", r.error, "host-not-allowed");
   r = await send({ action: "weibo-api", url: "not-a-url" });
+  check("非法地址被拒", r.error, "bad-url");
+
+  console.log("== 10b. X 嵌入接口代理只放行 twimg / x.com 的接口域名 ==");
+  r = await send({
+    action: "x-api",
+    url: "https://cdn.syndication.twimg.com/tweet-result?id=1700000000000000001&lang=en&token=abc"
+  });
+  check("syndication 接口放行", r.ok, true);
+  r = await send({ action: "x-api", url: "https://pbs.twimg.com/media/GX1?format=jpg" });
+  check("图片 CDN 不放行（不需要代理）", r.error, "host-not-allowed");
+  r = await send({ action: "x-api", url: "https://example.com/steal" });
+  check("外部域名被拒", r.error, "host-not-allowed");
+  r = await send({ action: "x-api", url: "nope" });
   check("非法地址被拒", r.error, "bad-url");
 
   console.log("== 11. 请求头规则：只补 Referer，作用于微博自有域名 ==");

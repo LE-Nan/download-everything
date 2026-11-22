@@ -67,16 +67,41 @@
   .pane.active { display: block; }
   h1 { font-size: 22px; font-weight: 400; line-height: 1.35; margin: 0 0 14px; }
   h2 { font-size: 18px; font-weight: 500; line-height: 1.35; margin: 34px 0 8px; }
+  /* 三个站点的标题是同一层级的兄弟：统一 20px / 同一字重。
+     它们历史上分别是 h1 和 h2，只靠标签继承会出现 22px 与 18px 两种大小。 */
+  .site-title { font-size: 20px; font-weight: 500; }
   /* 站点链接：默认与标题同色，悬浮才出现蓝色下划线，明确「可跳转」 */
   .site-link { color: inherit; text-decoration: none; cursor: pointer; }
   .site-link:hover { color: #1a73e8; text-decoration: underline; }
 
-  .subtitle { font-size: 12.5px; color: #5f6368; margin: 0 0 12px; }
 
   /* 卡片 = 一组设置 */
   .card { border: 1px solid #dadce0; border-radius: 8px; padding: 6px 22px 20px; }
-  /* 卡片内的小标题（图片下载 / 视频下载） */
-  h3 { font-size: 14px; font-weight: 500; margin: 18px 0 2px; color: #202124; }
+  /* 卡片内的小标题（图片下载 / 视频下载）：加粗一档，比字段名更跳 */
+  h3 { font-size: 15px; font-weight: 700; margin: 18px 0 2px; color: #202124; }
+
+  /* ---------- 站点卡片：一行一项 ----------
+     三列网格 = 设置名 / 控件 / 功能按钮。列宽由整张卡片共享，所以行与行之间
+     天然对齐；中间列吃满剩余宽度，两张卡片之间也保持同一套列边界。 */
+  .site-card {
+    display: grid;
+    grid-template-columns: 80px minmax(0, 1fr) auto;
+    column-gap: 14px;
+    row-gap: 10px;
+    align-items: center;
+    padding: 12px 20px 18px;
+  }
+  /* 组标题（图片下载 / 视频下载）横跨三列，第二组上方多留一点，形成分组 */
+  .site-card > h3 { grid-column: 1 / -1; margin: 6px 0 0; }
+  .site-card > h3:not(:first-child) { margin-top: 12px; }
+  /* 设置名与控件同一行垂直居中，不再各占一行 */
+  .row-label { margin: 0; font-size: 12.5px; color: #5f6368; }
+  .row-label[title] { cursor: help; }
+  /* 下拉框留在控件列内，与上面的路径框左右边缘完全一致 */
+  .site-card > select.row-control { height: 34px; }
+  /* 功能按钮紧贴控件列：按钮一多只会往右长，不会把输入框推远 */
+  .row-actions { display: flex; align-items: center; gap: 8px; justify-content: flex-start; }
+  .row-actions .btn { height: 34px; }
 
   label { display: block; margin: 12px 0 6px; font-size: 12.5px; color: #5f6368; }
   select {
@@ -91,9 +116,7 @@
     font-size: 13.5px;
   }
   select:focus { outline: 2px solid #1a73e8; outline-offset: -1px; border-color: transparent; }
-  .dir-row { display: flex; align-items: center; gap: 8px; }
   .dir-display {
-    flex: 1 1 auto;
     min-width: 0;
     height: 34px;
     line-height: 20px;
@@ -191,21 +214,20 @@
   <main>
     <!-- ============ 分栏一：保存位置 ============ -->
     <section class="pane active" id="pane-storage">
-      <h1><span data-i18n="opt.igTitleBefore">Instagram下载设置（</span><a class="site-link" href="https://www.instagram.com" target="_blank" rel="noopener noreferrer">instagram</a><span data-i18n="opt.igTitleAfter">）</span></h1>
+      <h1 class="site-title"><span data-i18n="opt.igTitleBefore">Instagram下载设置（</span><a class="site-link" href="https://www.instagram.com" target="_blank" rel="noopener noreferrer">instagram</a><span data-i18n="opt.igTitleAfter">）</span></h1>
 
-      <!-- Instagram 的图片与视频设置合并进同一张卡片；站点标题在卡片框外 -->
-      <section class="card">
+      <section class="card site-card">
         <h3 data-i18n="opt.img">图片下载</h3>
-        <label data-i18n="opt.imgDir">图片保存位置</label>
-        <div class="dir-row">
-          <div class="dir-display" id="imageDirDisplay">默认（下载\ins-download\images）</div>
+        <span class="row-label" data-i18n="opt.imgDir" data-i18n-title="opt.imgDirHint">保存位置</span>
+        <div class="dir-display" id="imageDirDisplay">默认（下载\ins-download\images）</div>
+        <div class="row-actions">
           <button class="btn" id="imagePick" data-i18n="opt.pick">选择文件夹</button>
           <button class="btn warn" id="imageReauth" style="display:none" data-i18n="opt.reauth">重新授权</button>
           <button class="btn" id="imageReset" style="display:none" data-i18n="opt.reset">恢复默认</button>
         </div>
-        <div class="hint" data-i18n="opt.imgDirHint">点击“选择文件夹”在弹出的系统窗口中挑选任意目录，之后图片静默下载到该目录，不再询问</div>
-        <label for="imageQuality" data-i18n="opt.imgQuality">图片分辨率</label>
-        <select id="imageQuality">
+        <label class="row-label" for="imageQuality" data-i18n="opt.imgQuality" data-i18n-title="opt.insImgHint">分辨率</label>
+        <select class="row-control" id="imageQuality">
+          <option value="orig" data-i18n="q.orig">原图（不压缩，推荐）</option>
           <option value="240">240P</option>
           <option value="480">480P</option>
           <option value="720">720P</option>
@@ -215,16 +237,36 @@
         </select>
 
         <h3 data-i18n="opt.video">视频下载</h3>
-        <label data-i18n="opt.videoDir">视频保存位置</label>
-        <div class="dir-row">
-          <div class="dir-display" id="videoDirDisplay">默认（下载\ins-download\videos）</div>
+        <span class="row-label" data-i18n="opt.videoDir" data-i18n-title="opt.videoDirHint">保存位置</span>
+        <div class="dir-display" id="videoDirDisplay">默认（下载\ins-download\videos）</div>
+        <div class="row-actions">
           <button class="btn" id="videoPick" data-i18n="opt.pick">选择文件夹</button>
           <button class="btn warn" id="videoReauth" style="display:none" data-i18n="opt.reauth">重新授权</button>
           <button class="btn" id="videoReset" style="display:none" data-i18n="opt.reset">恢复默认</button>
         </div>
-        <div class="hint" data-i18n="opt.videoDirHint">与图片目录独立设置，互不影响</div>
-        <label for="videoQuality" data-i18n="opt.videoQuality">视频清晰度</label>
-        <select id="videoQuality">
+        <label class="row-label" for="videoQuality" data-i18n="opt.videoQuality" data-i18n-title="opt.insVideoHint">清晰度</label>
+        <select class="row-control" id="videoQuality">
+          <option value="orig" data-i18n="q.vOrig">原画质</option>
+          <option value="480" data-i18n="q.v480">标清（480P）</option>
+          <option value="720" data-i18n="q.v720">高清（720P）</option>
+          <option value="1080" data-i18n="q.v1080">超清（1080P）</option>
+          <option value="2k" data-i18n="q.v2k">超高清（2K）</option>
+        </select>
+      </section>
+
+      <h2 class="site-title"><span data-i18n="opt.wbTitleBefore">微博下载设置（</span><a class="site-link" href="https://weibo.com" target="_blank" rel="noopener noreferrer">weibo</a><span data-i18n="opt.wbTitleAfter">）</span></h2>
+      <section class="card site-card">
+        <h3 data-i18n="opt.img">图片下载</h3>
+        <span class="row-label" data-i18n="opt.imgDir" data-i18n-title="opt.imgDirHint">保存位置</span>
+        <div class="dir-display" id="weiboImageDirDisplay">默认（下载\weibo-download\images）</div>
+        <div class="row-actions">
+          <button class="btn" id="weiboImagePick" data-i18n="opt.pick">选择文件夹</button>
+          <button class="btn warn" id="weiboImageReauth" style="display:none" data-i18n="opt.reauth">重新授权</button>
+          <button class="btn" id="weiboImageReset" style="display:none" data-i18n="opt.reset">恢复默认</button>
+        </div>
+        <label class="row-label" for="weiboImageQuality" data-i18n="opt.imgClarity" data-i18n-title="opt.wbImgHint">分辨率</label>
+        <select class="row-control" id="weiboImageQuality">
+          <option value="orig" data-i18n="q.orig">原图（不压缩，推荐）</option>
           <option value="240">240P</option>
           <option value="480">480P</option>
           <option value="720">720P</option>
@@ -232,43 +274,62 @@
           <option value="2k">2K</option>
           <option value="4k">4K</option>
         </select>
-        <div class="hint" data-i18n="opt.insVideoHint">视频以 Instagram 实际提供的流为准，会优先匹配所选清晰度</div>
-      </section>
-
-      <h2><span data-i18n="opt.wbTitleBefore">微博下载设置（</span><a class="site-link" href="https://weibo.com" target="_blank" rel="noopener noreferrer">weibo</a><span data-i18n="opt.wbTitleAfter">）</span></h2>
-      <div class="subtitle" data-i18n="opt.wbHint">以下设置只作用于微博，与上面的 Instagram 设置互不影响</div>
-      <section class="card">
-        <h3 data-i18n="opt.img">图片下载</h3>
-        <label data-i18n="opt.imgDir">图片保存位置</label>
-        <div class="dir-row">
-          <div class="dir-display" id="weiboImageDirDisplay">默认（下载\weibo-download\images）</div>
-          <button class="btn" id="weiboImagePick" data-i18n="opt.pick">选择文件夹</button>
-          <button class="btn warn" id="weiboImageReauth" style="display:none" data-i18n="opt.reauth">重新授权</button>
-          <button class="btn" id="weiboImageReset" style="display:none" data-i18n="opt.reset">恢复默认</button>
-        </div>
-        <label for="weiboImageQuality" data-i18n="opt.imgClarity">图片清晰度</label>
-        <select id="weiboImageQuality">
-          <option value="large" data-i18n="q.orig">原图（不压缩，推荐）</option>
-          <option value="orj1080" data-i18n="q.orj1080">超清（1080P）</option>
-          <option value="mw690" data-i18n="q.mw690">高清（690P）</option>
-          <option value="orj360" data-i18n="q.orj360">标准（360P）</option>
-        </select>
-        <div class="hint" data-i18n="opt.wbImgHint">微博并非每张图都有 1080 / 690 档，取不到的档位会自动回退到原图</div>
 
         <h3 data-i18n="opt.video">视频下载</h3>
-        <label data-i18n="opt.videoDir">视频保存位置</label>
-        <div class="dir-row">
-          <div class="dir-display" id="weiboVideoDirDisplay">默认（下载\weibo-download\videos）</div>
+        <span class="row-label" data-i18n="opt.videoDir" data-i18n-title="opt.videoDirHint">保存位置</span>
+        <div class="dir-display" id="weiboVideoDirDisplay">默认（下载\weibo-download\videos）</div>
+        <div class="row-actions">
           <button class="btn" id="weiboVideoPick" data-i18n="opt.pick">选择文件夹</button>
           <button class="btn warn" id="weiboVideoReauth" style="display:none" data-i18n="opt.reauth">重新授权</button>
           <button class="btn" id="weiboVideoReset" style="display:none" data-i18n="opt.reset">恢复默认</button>
         </div>
-        <label for="weiboVideoQuality" data-i18n="opt.videoQuality">视频清晰度</label>
-        <select id="weiboVideoQuality">
-          <option value="hd" data-i18n="q.hd">高清</option>
-          <option value="sd" data-i18n="q.sd">标清</option>
+        <label class="row-label" for="weiboVideoQuality" data-i18n="opt.videoQuality" data-i18n-title="opt.wbVideoHint">清晰度</label>
+        <select class="row-control" id="weiboVideoQuality">
+          <option value="orig" data-i18n="q.vOrig">原画质</option>
+          <option value="480" data-i18n="q.v480">标清（480P）</option>
+          <option value="720" data-i18n="q.v720">高清（720P）</option>
+          <option value="1080" data-i18n="q.v1080">超清（1080P）</option>
+          <option value="2k" data-i18n="q.v2k">超高清（2K）</option>
         </select>
-        <div class="hint" data-i18n="opt.wbVideoHint">微博接口通常只提供高清/标清两档，以实际返回为准</div>
+      </section>
+
+      <h2 class="site-title"><span data-i18n="opt.twTitleBefore">X（推特）下载设置（</span><a class="site-link" href="https://x.com" target="_blank" rel="noopener noreferrer">x.com</a><span data-i18n="opt.twTitleAfter">）</span></h2>
+      <section class="card site-card">
+        <h3 data-i18n="opt.img">图片下载</h3>
+        <span class="row-label" data-i18n="opt.imgDir" data-i18n-title="opt.imgDirHint">保存位置</span>
+        <div class="dir-display" id="twitterImageDirDisplay">默认（下载\twitter-download\images）</div>
+        <div class="row-actions">
+          <button class="btn" id="twitterImagePick" data-i18n="opt.pick">选择文件夹</button>
+          <button class="btn warn" id="twitterImageReauth" style="display:none" data-i18n="opt.reauth">重新授权</button>
+          <button class="btn" id="twitterImageReset" style="display:none" data-i18n="opt.reset">恢复默认</button>
+        </div>
+        <label class="row-label" for="twitterImageQuality" data-i18n="opt.imgClarity" data-i18n-title="opt.twImgHint">分辨率</label>
+        <select class="row-control" id="twitterImageQuality">
+          <option value="orig" data-i18n="q.orig">原图（不压缩，推荐）</option>
+          <option value="240">240P</option>
+          <option value="480">480P</option>
+          <option value="720">720P</option>
+          <option value="1080">1080P</option>
+          <option value="2k">2K</option>
+          <option value="4k">4K</option>
+        </select>
+
+        <h3 data-i18n="opt.video">视频下载</h3>
+        <span class="row-label" data-i18n="opt.videoDir" data-i18n-title="opt.videoDirHint">保存位置</span>
+        <div class="dir-display" id="twitterVideoDirDisplay">默认（下载\twitter-download\videos）</div>
+        <div class="row-actions">
+          <button class="btn" id="twitterVideoPick" data-i18n="opt.pick">选择文件夹</button>
+          <button class="btn warn" id="twitterVideoReauth" style="display:none" data-i18n="opt.reauth">重新授权</button>
+          <button class="btn" id="twitterVideoReset" style="display:none" data-i18n="opt.reset">恢复默认</button>
+        </div>
+        <label class="row-label" for="twitterVideoQuality" data-i18n="opt.videoQuality" data-i18n-title="opt.twVideoHint">清晰度</label>
+        <select class="row-control" id="twitterVideoQuality">
+          <option value="orig" data-i18n="q.vOrig">原画质</option>
+          <option value="480" data-i18n="q.v480">标清（480P）</option>
+          <option value="720" data-i18n="q.v720">高清（720P）</option>
+          <option value="1080" data-i18n="q.v1080">超清（1080P）</option>
+          <option value="2k" data-i18n="q.v2k">超高清（2K）</option>
+        </select>
       </section>
 
       <div class="savebar">
